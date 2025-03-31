@@ -50,8 +50,8 @@
         target.appendChild(resetButton);
         target.appendChild(resultSpan);
 
-        let apiToken = localStorage.getItem('tornApiToken') || DEFAULT_API_KEY;
-        if (apiToken === DEFAULT_API_KEY) {
+        let apiToken = localStorage.getItem('tornApiToken');
+        if (!apiToken || apiToken === DEFAULT_API_KEY) {
             alert('Please enter your API token with the correct permissions.');
             const newApiToken = prompt("Please enter your Torn API token key:", DEFAULT_API_KEY);
             if (newApiToken && newApiToken !== DEFAULT_API_KEY) {
@@ -69,7 +69,7 @@
             resultSpan.textContent = 'API token found.';
             resultSpan.style.color = 'green';
         }
-        
+
         if (apiToken) {
             updateUpkeep(apiToken);
             setInterval(() => updateUpkeep(apiToken), CHECK_INTERVAL);
@@ -93,7 +93,9 @@
     }
 
     function updateUpkeep(apiToken) {
+        console.log("Updating upkeep with token:", apiToken);
         // Add the code to update upkeep using the provided API token
+        // Ensure proper API call and error handling
     }
 
     // Initialize the script
