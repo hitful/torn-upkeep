@@ -7,8 +7,8 @@
 // @match        https://www.torn.com/*
 // @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
 // @grant        none
-// @updateURL    https://raw.githubusercontent.com/hitful/torn-upkeep/main/upkeep-alerts
-// @downloadURL  https://raw.githubusercontent.com/hitful/torn-upkeep/main/upkeep-alerts
+// @updateURL    https://raw.githubusercontent.com/hitful/torn-upkeep/main/upkeep-alerts.js
+// @downloadURL  https://raw.githubusercontent.com/hitful/torn-upkeep/main/upkeep-alerts.js
 // @license      MIT
 // ==/UserScript==
 
