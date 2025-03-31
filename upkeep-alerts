@@ -1,0 +1,177 @@
+// ==UserScript==
+// @name         My Upkeep Alert - Private Island Total
+// @namespace    http://tampermonkey.net/
+// @version      2025-03-26
+// @description  Shows upkeep due from homepage fees for Private Island
+// @author       Hitful
+// @match        https://www.torn.com/*
+// @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
+// @grant        none
+// @updateURL    https://github.com/hitful/torn-upkeep/new/main/upkeep-alert.js
+// @downloadURL  https://github.com/hitful/torn-upkeep/new/main/upkeep-alert.js
+// @license      MIT
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    const CHECK_INTERVAL = 60 * 60 * 1000; // Check every hour
+    const DEFAULT_API_KEY = 'YOUR_API_KEY_HERE'; // Replace with your API key
+    const DAILY_UPKEEP_TOTAL = 352500; // Default total upkeep
+
+    function addButtonAndCheck() {
+        if (document.getElementById('Upkeep')) {
+            console.log("Buttons already exist, skipping creation.");
+            return;
+        }
+
+        console.log("Initializing upkeep monitor for Private Island...");
+
+        const upkeepButton = document.createElement('button');
+        upkeepButton.id = 'Upkeep';
+        upkeepButton.style.color = 'var(--default-blue-color)';
+        upkeepButton.style.cursor = 'pointer';
+        upkeepButton.style.marginRight = '10px';
+        upkeepButton.textContent = 'Loading Upkeep...';
+
+        const resetButton = document.createElement('button');
+        resetButton.id = 'ResetKey';
+        resetButton.style.color = 'var(--default-red-color)';
+        resetButton.style.cursor = 'pointer';
+        resetButton.textContent = 'Reset API Key';
+
+        const resultSpan = document.createElement('span');
+        resultSpan.id = 'Result';
+        resultSpan.style.fontSize = '12px';
+        resultSpan.style.fontWeight = '100';
+
+        const target = document.querySelector('div.content-title > h4') || document.body;
+        target.appendChild(upkeepButton);
+        target.appendChild(resetButton);
+        target.appendChild(resultSpan);
+
+        let apiToken = localStorage.getItem('tornApiToken') || DEFAULT_API_KEY;
+        localStorage.setItem('tornApiToken', apiToken);
+
+        if (apiToken) {
+            updateUpkeep(apiToken);
+            setInterval(() => updateUpkeep(apiToken), CHECK_INTERVAL);
+        } else {
+            resultSpan.textContent = 'No API token provided.';
+            resultSpan.style.color = 'red';
+            console.error('No API token provided.');
+        }
+
+        resetButton.addEventListener('click', () => {
+            const newApiToken = prompt("Please enter your new Torn API token key:", DEFAULT_API_KEY);
+            if (newApiToken) {
+                localStorage.setItem('tornApiToken', newApiToken);
+                resultSpan.textContent = 'API token updated.';
+                resultSpan.style.color = 'green';
+                updateUpkeep(newApiToken);
+            }
+        });
+    }
+
+    async function updateUpkeep(apiToken) {
+        const resultSpan = document.getElementById('Result');
+        const upkeepButton = document.getElementById('Upkeep');
+
+        try {
+            const residenceId = await fetchCurrentResidence(apiToken);
+            if (!residenceId) {
+                resultSpan.textContent = 'No Private Island found.';
+                resultSpan.style.color = 'red';
+                upkeepButton.textContent = 'No Residence';
+                return;
+            }
+
+            const upkeepPaid = await fetchUpkeepPayments(apiToken);
+            let balanceDue = await fetchUpkeepFeesFromHomepage();
+
+            if (balanceDue === null) {
+                const upkeepData = await fetchUpkeepDetails(residenceId, apiToken);
+                balanceDue = upkeepData ? upkeepData.totalDailyUpkeep : DAILY_UPKEEP_TOTAL;
+            }
+
+            const remainingBalance = Math.max(balanceDue - upkeepPaid, 0);
+
+            upkeepButton.textContent = `Upkeep Due: $${remainingBalance.toLocaleString()}`;
+            upkeepButton.onclick = () => {
+                window.location.href = `https://www.torn.com/properties.php#/p=options&ID=${residenceId}&tab=upkeep`;
+            };
+
+            if (remainingBalance === 0) {
+                resultSpan.textContent = 'Upkeep fully paid!';
+                resultSpan.style.color = 'green';
+            } else {
+                resultSpan.textContent = `Owed: $${remainingBalance.toLocaleString()} (Daily: $${DAILY_UPKEEP_TOTAL.toLocaleString()})`;
+                resultSpan.style.color = remainingBalance >= DAILY_UPKEEP_TOTAL * 7 ? 'red' : 'yellow';
+            }
+        } catch (error) {
+            resultSpan.textContent = 'Error fetching data.';
+            resultSpan.style.color = 'red';
+            upkeepButton.textContent = 'Error';
+            console.error('Error in updateUpkeep:', error);
+        }
+    }
+
+    async function fetchUpkeepPayments(apiToken) {
+        const url = `https://api.torn.com/user/?selections=money&key=${apiToken}`;
+        try {
+            const response = await fetch(url);
+            const data = await response.json();
+            
+            console.log("Financial API response:", JSON.stringify(data, null, 2)); // Log full response
+
+            if (data.error) {
+                console.error("API Error:", data.error);
+                return 0; // Return 0 if there's an API error
+            }
+
+            let upkeepPaid = 0;
+            if (data.money) {
+                for (const transaction of Object.values(data.money)) {
+                    if (transaction.descr.includes("Upkeep Payment")) {
+                        upkeepPaid += transaction.amount;
+                    }
+                }
+            }
+
+            console.log(`Total upkeep paid today: $${upkeepPaid.toLocaleString()}`);
+            return upkeepPaid;
+        } catch (error) {
+            console.error("Error fetching upkeep payments:", error);
+            return 0;
+        }
+    }
+
+    async function fetchCurrentResidence(apiToken) {
+        const url = `https://api.torn.com/user/?selections=properties&key=${apiToken}`;
+        const response = await fetch(url);
+        const data = await response.json();
+        if (data.error) return null;
+
+        for (let propId in data.properties) {
+            const prop = data.properties[propId];
+            if (prop.status === "Living here" || prop.property_type === 13) {
+                return propId;
+            }
+        }
+        return null;
+    }
+
+    async function fetchUpkeepFeesFromHomepage() {
+        return null; // Placeholder for future improvements
+    }
+
+    async function fetchUpkeepDetails(propertyId, apiToken) {
+        return { totalDailyUpkeep: DAILY_UPKEEP_TOTAL };
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', addButtonAndCheck);
+    } else {
+        addButtonAndCheck();
+    }
+})();
