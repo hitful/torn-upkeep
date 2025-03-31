@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         My Upkeep Alert - Private Island Total
+// @name         Upkeep Alerts
 // @namespace    http://tampermonkey.net/
 // @version      2025-03-26
-// @description  Shows upkeep due from homepage fees for Private Island
+// @description  Helps manage upkeep
 // @author       Hitful
 // @match        https://www.torn.com/*
 // @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
