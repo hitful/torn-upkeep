@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Upkeep Alerts
 // @namespace    http://tampermonkey.net/
-// @version      2025-03-26
+// @version      2025-03-31
 // @description  Helps manage upkeep
 // @author       Hitful
 // @match        https://www.torn.com/*
@@ -51,19 +51,51 @@
         target.appendChild(resultSpan);
 
         let apiToken = localStorage.getItem('tornApiToken') || DEFAULT_API_KEY;
-        localStorage.setItem('tornApiToken', apiToken);
-
+        if (apiToken === DEFAULT_API_KEY) {
+            alert('Please enter your API token with the correct permissions.');
+            const newApiToken = prompt("Please enter your Torn API token key:", DEFAULT_API_KEY);
+            if (newApiToken && newApiToken !== DEFAULT_API_KEY) {
+                apiToken = newApiToken;
+                localStorage.setItem('tornApiToken', apiToken);
+                resultSpan.textContent = 'API token set.';
+                resultSpan.style.color = 'green';
+            } else {
+                resultSpan.textContent = 'No valid API token provided.';
+                resultSpan.style.color = 'red';
+                console.error('No valid API token provided.');
+                return;
+            }
+        } else {
+            resultSpan.textContent = 'API token found.';
+            resultSpan.style.color = 'green';
+        }
+        
         if (apiToken) {
             updateUpkeep(apiToken);
             setInterval(() => updateUpkeep(apiToken), CHECK_INTERVAL);
-        } else {
-            resultSpan.textContent = 'No API token provided.';
-            resultSpan.style.color = 'red';
-            console.error('No API token provided.');
         }
 
         resetButton.addEventListener('click', () => {
             const newApiToken = prompt("Please enter your new Torn API token key:", DEFAULT_API_KEY);
-            if (newApiToken) {
+            if (newApiToken && newApiToken !== DEFAULT_API_KEY) {
                 localStorage.setItem('tornApiToken', newApiToken);
                 resultSpan.textContent = 'API token updated.';
+                resultSpan.style.color = 'green';
+                apiToken = newApiToken;
+                // Update the upkeep immediately with the new token
+                updateUpkeep(apiToken);
+            } else {
+                resultSpan.textContent = 'No valid API token provided.';
+                resultSpan.style.color = 'red';
+                console.error('No valid API token provided.');
+            }
+        });
+    }
+
+    function updateUpkeep(apiToken) {
+        // Add the code to update upkeep using the provided API token
+    }
+
+    // Initialize the script
+    addButtonAndCheck();
+})();
