@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Upkeep Alerts
-// @namespace    https://github.com/hitful/torn-upkeep/tree/main
-// @version      2025-04-04.12
+// @namespace    https://github.com/hitful/torn-upkeep/
+// @version      2025-04-04.13
 // @description  Helps manage shared property upkeep on Torn.com with accurate balance tracking and payment detection.
 // @author       Hitful (enhanced by Grok/xAI)
 // @match        https://www.torn.com/*
@@ -28,7 +28,7 @@
     // --- Load Stored Settings ---
     let apiToken = GM_getValue('tornApiToken', localStorage.getItem('tornApiToken') || DEFAULT_API_KEY);
     let startDate = GM_getValue('startDate', '2025-04-01');
-    let otherPlayer = GM_getValue('otherPlayer', 'Occraz'); // Default to your current co-owner
+    let otherPlayer = GM_getValue('otherPlayer', 'Occraz');
     let upkeepCost = GM_getValue('upkeepCost', DEFAULT_UPKEEP_COST);
     let lastPaymentDate = GM_getValue('lastPaymentDate', null);
     let panelVisible = GM_getValue('panelVisible', false);
@@ -70,11 +70,14 @@
         try {
             const response = await fetch(`https://api.torn.com/user/?selections=events&key=${apiToken}`);
             const data = await response.json();
-            if ( TODAYdata.error) throw new Error(`API error: ${data.error.error}`);
+            if (data.error) throw new Error(`API error: ${data.error.error}`);
 
             const events = data.events || {};
             const eventList = Object.values(events);
             let latestPaymentDate = lastPaymentDate;
+            let paidToday = false;
+
+            const todayStr = getTornDay().toISOString().split('T')[0];
 
             for (const event of eventList) {
                 if (!event || !event.timestamp || !event.event) continue;
@@ -82,10 +85,13 @@
                 const eventText = event.event.toLowerCase();
                 const eventDate = new Date(event.timestamp * 1000).toISOString().split('T')[0];
 
-                // Look specifically for upkeep payments matching the current upkeep cost
+                // Look for upkeep payments matching the current upkeep cost
                 if (eventText.includes('upkeep') && eventText.includes(upkeepCost.toString())) {
                     if (!latestPaymentDate || eventDate > latestPaymentDate) {
                         latestPaymentDate = eventDate;
+                    }
+                    if (eventDate === todayStr) {
+                        paidToday = true;
                     }
                 }
             }
@@ -95,9 +101,10 @@
                 GM_setValue('lastPaymentDate', lastPaymentDate);
             }
 
-            amountOwed = calculateAmountOwed(lastPaymentDate);
+            // Reset amountOwed to 0 if paid today, otherwise calculate based on days since last payment
+            amountOwed = paidToday ? 0 : calculateAmountOwed(lastPaymentDate);
             GM_setValue('amountOwed', amountOwed);
-            return { paidToday: lastPaymentDate === getTornDay().toISOString().split('T')[0], date: lastPaymentDate };
+            return { paidToday, date: lastPaymentDate };
         } catch (error) {
             console.error('Error checking payment history:', error);
             amountOwed = calculateAmountOwed(lastPaymentDate);
@@ -153,7 +160,7 @@
         Notification.requestPermission().catch(err => console.error('Notification permission request failed:', err));
     }
 
-    // --- Styles (unchanged) ---
+    // --- Styles ---
     GM_addStyle(`
         .telemetry-panel { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: #1e1e1e; color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.3); font-family: Arial, sans-serif; z-index: 1000; width: 320px; max-height: 80vh; overflow-y: auto; }
         .telemetry-header { font-size: 18px; margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center; }
@@ -270,6 +277,8 @@
         }
 
         document.getElementById('closePanel').addEventListener('click', () => {
+            panelVisible = false;
+            GM_setValue('panelVisible', panelVisible);
             panel.style.display = 'none';
         });
 
@@ -324,7 +333,7 @@
         upkeepButton.textContent = 'Loading Upkeep...';
         try {
             const userResponse = await fetch(`https://api.torn.com/user/?selections=basic,properties,events&key=${apiToken}`);
-            const userData = await userResponse.json();
+            const userData = await response.json();
             if (userData.error) throw new Error(`API error: ${userData.error.error}`);
 
             playerMoney = userData.money || 0;
