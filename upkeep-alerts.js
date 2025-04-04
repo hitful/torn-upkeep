@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Upkeep Alerts
-// @namespace    https://github.com/hitful/torn-upkeep/
-// @version      2025-04-04.13
-// @description  Helps manage shared property upkeep on Torn.com with accurate balance tracking and payment detection.
+// @namespace    https://github.com/hitful/torn-upkeep/tree/main
+// @version      2025-04-04.14
+// @description  Helps manage shared property upkeep on Torn.com with accurate balance tracking using the upkeep table.
 // @author       Hitful (enhanced by Grok/xAI)
 // @match        https://www.torn.com/*
 // @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
@@ -22,6 +22,7 @@
     const CHECK_INTERVAL = 60 * 60 * 1000; // Check every hour
     const DEFAULT_API_KEY = 'YOUR_API_KEY_HERE';
     const PROPERTIES_PAGE = 'https://www.torn.com/properties.php';
+    const UPKEEP_TAB_URL = 'https://www.torn.com/properties.php#/p=options&ID=4725716&tab=upkeep';
     const DEFAULT_UPKEEP_COST = 352500; // $352,500/day for current Private Island
     const NOTIFICATION_HOUR_OFFSET = 7; // Notify 7 hours before midnight UTC
 
@@ -56,16 +57,63 @@
         return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
     }
 
-    // --- Calculate Amount Owed ---
-    function calculateAmountOwed(lastPayment) {
-        if (!lastPayment) return upkeepCost; // No payment recorded yet
-        const today = getTornDay();
-        const lastPaid = new Date(lastPayment);
-        const daysSince = Math.floor((today - lastPaid) / (1000 * 60 * 60 * 24));
-        return Math.max(0, daysSince * upkeepCost); // Accumulate daily upkeep
+    // --- Scrape Upkeep Table ---
+    async function scrapeUpkeepTable() {
+        try {
+            // Check if we're on the upkeep tab
+            const isUpkeepTab = window.location.href.includes('tab=upkeep');
+            let table;
+
+            if (isUpkeepTab) {
+                // Wait for the table to load on the current page
+                table = await new Promise((resolve) => {
+                    waitForElement('div.upkeep-payments-wrap table', (element) => resolve(element), 5000);
+                });
+            } else {
+                // Fetch the upkeep tab page in the background
+                const response = await fetch(UPKEEP_TAB_URL);
+                const text = await response.text();
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(text, 'text/html');
+                table = doc.querySelector('div.upkeep-payments-wrap table');
+            }
+
+            if (!table) throw new Error('Upkeep table not found');
+
+            const rows = table.querySelectorAll('tbody > li');
+            if (rows.length === 0) throw new Error('No upkeep payment rows found');
+
+            // Get the first row (most recent payment)
+            const firstRow = rows[0];
+            const columns = firstRow.querySelectorAll('div');
+
+            // Extract data
+            const dateStr = columns[0].textContent.trim(); // e.g., "14:04:37"
+            const user = columns[1].textContent.trim(); // e.g., "EPFE"
+            const amountPaid = parseInt(columns[2].textContent.replace(/[^0-9]/g, '')); // e.g., "$352,500" -> 352500
+            const upkeepBalance = parseInt(columns[3].textContent.replace(/[^0-9]/g, '')); // e.g., "$0" -> 0
+
+            // Parse the date (assuming it's in Torn's format: HH:MM:SS on today or a past date)
+            const today = getTornDay();
+            const [hours, minutes, seconds] = dateStr.split(':').map(Number);
+            const paymentDate = new Date(today);
+            paymentDate.setUTCHours(hours, minutes, seconds);
+            const paymentDateStr = paymentDate.toISOString().split('T')[0];
+
+            // Update stored values
+            lastPaymentDate = paymentDateStr;
+            amountOwed = upkeepBalance;
+            GM_setValue('lastPaymentDate', lastPaymentDate);
+            GM_setValue('amountOwed', amountOwed);
+
+            return { paidToday: paymentDateStr === today.toISOString().split('T')[0], date: lastPaymentDate, user };
+        } catch (error) {
+            console.error('Error scraping upkeep table:', error);
+            return null;
+        }
     }
 
-    // --- Check Events for Upkeep Payments Only ---
+    // --- Fallback: Check Events for Upkeep Payments (if table scrape fails) ---
     async function checkPaymentHistory(apiToken) {
         try {
             const response = await fetch(`https://api.torn.com/user/?selections=events&key=${apiToken}`);
@@ -85,7 +133,6 @@
                 const eventText = event.event.toLowerCase();
                 const eventDate = new Date(event.timestamp * 1000).toISOString().split('T')[0];
 
-                // Look for upkeep payments matching the current upkeep cost
                 if (eventText.includes('upkeep') && eventText.includes(upkeepCost.toString())) {
                     if (!latestPaymentDate || eventDate > latestPaymentDate) {
                         latestPaymentDate = eventDate;
@@ -101,21 +148,25 @@
                 GM_setValue('lastPaymentDate', lastPaymentDate);
             }
 
-            // Reset amountOwed to 0 if paid today, otherwise calculate based on days since last payment
-            amountOwed = paidToday ? 0 : calculateAmountOwed(lastPaymentDate);
+            amountOwed = paidToday ? 0 : (amountOwed || upkeepCost);
             GM_setValue('amountOwed', amountOwed);
             return { paidToday, date: lastPaymentDate };
         } catch (error) {
             console.error('Error checking payment history:', error);
-            amountOwed = calculateAmountOwed(lastPaymentDate);
-            GM_setValue('amountOwed', amountOwed);
             return { paidToday: false, date: lastPaymentDate };
         }
     }
 
     // --- Determine Whose Turn ---
     async function isMyTurn(apiToken) {
-        const payment = await checkPaymentHistory(apiToken);
+        const tableData = await scrapeUpkeepTable();
+        let payment;
+        if (tableData) {
+            payment = tableData;
+        } else {
+            payment = await checkPaymentHistory(apiToken); // Fallback to API if table scrape fails
+        }
+
         if (payment.paidToday) {
             return false; // You paid today, other player's turn tomorrow
         }
@@ -292,8 +343,7 @@
         document.getElementById('otherPlayerInput').addEventListener('change', (e) => otherPlayer = e.target.value);
         document.getElementById('upkeepCostInput').addEventListener('change', (e) => {
             upkeepCost = parseInt(e.target.value) || DEFAULT_UPKEEP_COST;
-            amountOwed = calculateAmountOwed(lastPaymentDate);
-            GM_setValue('amountOwed', amountOwed);
+            GM_setValue('upkeepCost', upkeepCost);
         });
         document.getElementById('turnOverrideInput').addEventListener('change', (e) => turnOverride = e.target.value || null);
         document.getElementById('saveSettings').addEventListener('click', () => {
@@ -332,8 +382,16 @@
 
         upkeepButton.textContent = 'Loading Upkeep...';
         try {
-            const userResponse = await fetch(`https://api.torn.com/user/?selections=basic,properties,events&key=${apiToken}`);
-            const userData = await response.json();
+            // First, try to scrape the table
+            const tableData = await scrapeUpkeepTable();
+            if (!tableData) {
+                // Fallback to API if table scrape fails
+                await checkPaymentHistory(apiToken);
+            }
+
+            // Fetch player money balance
+            const userResponse = await fetch(`https://api.torn.com/user/?selections=basic,properties&key=${apiToken}`);
+            const userData = await userResponse.json();
             if (userData.error) throw new Error(`API error: ${userData.error.error}`);
 
             playerMoney = userData.money || 0;
@@ -341,7 +399,7 @@
             let detectedUpkeep = null;
 
             for (const prop of Object.values(properties)) {
-                if (prop.upkeep && prop.upkeep > 0) { // Any property with upkeep
+                if (prop.upkeep && prop.upkeep > 0) {
                     detectedUpkeep = prop.upkeep;
                     break;
                 }
@@ -350,14 +408,13 @@
             if (detectedUpkeep && detectedUpkeep !== upkeepCost) {
                 upkeepCost = detectedUpkeep;
                 GM_setValue('upkeepCost', upkeepCost);
-                amountOwed = calculateAmountOwed(lastPaymentDate);
-                GM_setValue('amountOwed', amountOwed);
-                resultSpan.textContent = 'Upkeep updated from API.';
             }
 
             const myTurn = await isMyTurn(apiToken);
             const statusText = myTurn ? 'Your Turn' : `${otherPlayer}'s Turn`;
             upkeepButton.textContent = `Owed: $${amountOwed.toLocaleString()} - ${statusText}`;
+            resultSpan.textContent = tableData ? 'Upkeep loaded from table.' : 'Upkeep loaded from API (fallback).';
+            resultSpan.style.color = 'green';
             updateUI();
         } catch (error) {
             console.error('Error updating upkeep:', error);
@@ -365,6 +422,7 @@
             const statusText = myTurn ? 'Your Turn' : `${otherPlayer}'s Turn`;
             upkeepButton.textContent = `Owed: $${amountOwed.toLocaleString()} - ${statusText}`;
             resultSpan.textContent = error.message;
+            resultSpan.style.color = 'red';
         }
     }
 
