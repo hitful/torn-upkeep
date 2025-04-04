@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Upkeep Alerts
 // @namespace    http://tampermonkey.net/
-// @version      2025-04-04.4
+// @version      2025-04-04.5
 // @description  Helps manage shared Private Island upkeep on Torn.com with telemetry, notifications, API integration, and payment detection.
 // @author       Hitful (enhanced by Grok/xAI)
 // @match        https://www.torn.com/*
@@ -132,22 +132,25 @@
             transform: translate(-50%, -50%);
             background: #1e1e1e;
             color: #fff;
-            padding: 15px;
+            padding: 20px;
             border-radius: 8px;
             box-shadow: 0 4px 8px rgba(0,0,0,0.3);
             font-family: Arial, sans-serif;
             z-index: 1000;
-            width: 300px;
+            width: 320px;
             max-height: 80vh;
             overflow-y: auto;
             display: none;
         }
         .telemetry-header {
             font-size: 18px;
-            margin-bottom: 10px;
+            margin-bottom: 15px;
             display: flex;
             justify-content: space-between;
             align-items: center;
+        }
+        .telemetry-content p {
+            margin: 10px 0;
         }
         .telemetry-content button {
             color: var(--default-blue-color);
@@ -155,9 +158,7 @@
             background: none;
             border: none;
             padding: 5px;
-        }
-        .telemetry-content button#ResetKey {
-            color: var(--default-red-color);
+            margin: 5px 0;
         }
         .turn-indicator {
             padding: 5px 10px;
@@ -167,15 +168,24 @@
         .my-turn { background: #4caf50; }
         .other-turn { background: #2196f3; }
         .settings-tab {
-            margin-top: 10px;
+            margin-top: 15px;
             display: none;
         }
         .settings-tab input {
             width: 100%;
-            padding: 5px;
-            margin: 5px 0;
+            padding: 8px;
+            margin: 8px 0;
             border-radius: 4px;
             border: none;
+            box-sizing: border-box;
+        }
+        .settings-tab button {
+            color: var(--default-red-color);
+            cursor: pointer;
+            background: none;
+            border: none;
+            padding: 5px;
+            margin: 5px 0;
         }
         .toggle-btn {
             cursor: pointer;
@@ -185,7 +195,7 @@
             font-size: 12px;
             font-weight: 100;
             display: block;
-            margin-top: 5px;
+            margin-top: 10px;
         }
         .upkeep-button {
             color: var(--default-blue-color);
@@ -252,15 +262,15 @@
                 <span class="toggle-btn" id="toggleSettings">[Settings]</span>
             </div>
             <div class="telemetry-content">
-                <p>Date: ${new Date().toLocaleDateString()}</p>
-                <button id="Upkeep">Go to Properties</button>
-                <button id="ResetKey">Reset API Key</button>
-                <p>Whose Turn: <span class="turn-indicator ${myTurn ? 'my-turn' : 'other-turn'}">${myTurn ? 'You' : otherPlayer}</span></p>
-                <p>Last Payment: ${lastPaymentDate || 'Not detected'}</p>
+                <p><strong>Date:</strong> ${new Date().toLocaleDateString()}</p>
+                <p><button id="Upkeep">Go to Properties</button></p>
+                <p><strong>Whose Turn:</strong> <button id="OtherPlayer" class="turn-indicator ${myTurn ? 'my-turn' : 'other-turn'}">${myTurn ? 'You' : otherPlayer}</button></p>
+                <p><strong>Last Payment:</strong> ${lastPaymentDate || 'Not detected'}</p>
                 <span class="result-span" id="Result">Loading...</span>
             </div>
             <div class="settings-tab" id="settingsTab">
                 <input type="text" id="apiKeyInput" placeholder="Enter API Key" value="${apiToken}">
+                <button id="ResetKey">Reset API Key</button>
                 <input type="date" id="startDateInput" value="${startDate}">
                 <input type="text" id="otherPlayerInput" placeholder="Other Player Name" value="${otherPlayer}">
                 <input type="number" id="upkeepCostInput" placeholder="Upkeep Cost" value="${upkeepCost}">
@@ -275,7 +285,17 @@
         document.getElementById('Upkeep').addEventListener('click', () => {
             window.location.href = PROPERTIES_PAGE;
         });
-        document.getElementById('ResetKey').addEventListener('click', promptForApiToken);
+
+        // Make "Other Player" button editable
+        const otherPlayerButton = document.getElementById('OtherPlayer');
+        otherPlayerButton.addEventListener('click', () => {
+            const newName = prompt("Enter the name of the other player:", otherPlayer);
+            if (newName && newName.trim() !== '') {
+                otherPlayer = newName.trim();
+                GM_setValue('otherPlayer', otherPlayer);
+                updateUI(); // Refresh UI to reflect the new name
+            }
+        });
 
         const toggleBtn = document.getElementById('toggleSettings');
         const settingsTab = document.getElementById('settingsTab');
@@ -291,16 +311,27 @@
             updateUI();
             updateUpkeep(apiToken);
         });
+
+        document.getElementById('ResetKey').addEventListener('click', () => {
+            apiToken = DEFAULT_API_KEY;
+            GM_setValue('tornApiToken', apiToken);
+            localStorage.setItem('tornApiToken', apiToken);
+            updateUI();
+            promptForApiToken();
+        });
+
         document.getElementById('startDateInput').addEventListener('change', (e) => {
             startDate = e.target.value;
             GM_setValue('startDate', startDate);
             updateUI();
         });
+
         document.getElementById('otherPlayerInput').addEventListener('change', (e) => {
             otherPlayer = e.target.value;
             GM_setValue('otherPlayer', otherPlayer);
             updateUI();
         });
+
         document.getElementById('upkeepCostInput').addEventListener('change', (e) => {
             upkeepCost = parseInt(e.target.value) || DEFAULT_UPKEEP_COST;
             GM_setValue('upkeepCost', upkeepCost);
@@ -311,7 +342,7 @@
     // --- Prompt for API Token ---
     function promptForApiToken() {
         const resultSpan = document.getElementById('Result');
-        const newApiToken = prompt("Please enter your Torn API token key:", DEFAULT_API_KEY);
+        const newApiToken = prompt("Please enter your Torn API token key (Full Access with 'Events' permission required):", DEFAULT_API_KEY);
         if (newApiToken && newApiToken !== DEFAULT_API_KEY) {
             apiToken = newApiToken;
             GM_setValue('tornApiToken', apiToken);
