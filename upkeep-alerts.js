@@ -1,11 +1,10 @@
 // ==UserScript==
 // @name         Upkeep Alerts
 // @namespace    http://tampermonkey.net/
-// @version      2025-04-04.3
-// @description  Helps manage shared Private Island upkeep on Torn.com with telemetry, notifications, API integration, and payment detection for tornPDA.
+// @version      2025-04-04.4
+// @description  Helps manage shared Private Island upkeep on Torn.com with telemetry, notifications, API integration, and payment detection.
 // @author       Hitful (enhanced by Grok/xAI)
 // @match        https://www.torn.com/*
-// @match        https://tornpda.com/*
 // @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -25,7 +24,6 @@
     const PROPERTIES_PAGE = 'https://www.torn.com/properties.php';
     const DEFAULT_UPKEEP_COST = 352500; // $352,500/day
     const NOTIFICATION_TIME = "07:00"; // 07:00 AM PDT
-    const MAX_RETRIES = 5; // Retry up to 5 times for cooldown area
 
     // --- Load Stored Settings ---
     let apiToken = GM_getValue('tornApiToken', localStorage.getItem('tornApiToken') || DEFAULT_API_KEY);
@@ -42,27 +40,27 @@
         return diffDays % 2 === 0; // Even days = your turn, odd = other player's
     }
 
-    // --- Check Financial History for Payment ---
+    // --- Check Events for Upkeep Payment ---
     async function checkPaymentHistory(apiToken) {
         try {
-            const response = await fetch(`https://api.torn.com/user/?selections=personalstats&key=${apiToken}`);
+            const response = await fetch(`https://api.torn.com/user/?selections=events&key=${apiToken}`);
             const data = await response.json();
             if (data.error) throw new Error(`API error: ${data.error.error}`);
 
-            const moneyOut = data.personalstats.moneyout || 0;
-            const lastCheck = GM_getValue('lastMoneyOut', 0);
+            const events = data.events || {};
+            const today = new Date().toISOString().split('T')[0];
+            let paymentFound = false;
 
-            if (moneyOut > lastCheck) {
-                const diff = moneyOut - lastCheck;
-                if (diff === upkeepCost) {
-                    const now = new Date().toISOString().split('T')[0];
-                    GM_setValue('lastPaymentDate', now);
-                    GM_setValue('lastMoneyOut', moneyOut);
-                    return { paid: true, date: now };
+            for (const event of Object.values(events)) {
+                const eventDate = new Date(event.timestamp * 1000).toISOString().split('T')[0];
+                if (eventDate === today && event.event.includes('upkeep') && event.event.includes('Private Island')) {
+                    paymentFound = true;
+                    GM_setValue('lastPaymentDate', today);
+                    return { paid: true, date: today };
                 }
             }
-            GM_setValue('lastMoneyOut', moneyOut);
-            return { paid: false, date: lastPaymentDate };
+
+            return { paid: paymentFound, date: lastPaymentDate };
         } catch (error) {
             console.error('Error checking payment history:', error);
             return { paid: false, date: lastPaymentDate };
@@ -74,7 +72,7 @@
         const payment = await checkPaymentHistory(apiToken);
         if (payment.paid) {
             lastPaymentDate = payment.date;
-            return false; // If you just paid, it’s the other player’s turn
+            return false; // If you paid today, it’s the other player’s turn
         }
         if (lastPaymentDate) {
             const today = new Date();
@@ -103,7 +101,6 @@
                 if (typeof Notification !== 'undefined' && Notification.permission === "granted") {
                     new Notification(`It’s your turn to pay $${upkeepCost.toLocaleString()} for PI upkeep today!`);
                 } else {
-                    // Fallback: Update UI with a message
                     const resultSpan = document.getElementById('Result');
                     if (resultSpan) {
                         resultSpan.textContent = 'It’s your turn to pay! (Notifications unavailable)';
@@ -130,8 +127,9 @@
     GM_addStyle(`
         .telemetry-panel {
             position: fixed;
-            bottom: 10px;
-            right: 10px;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
             background: #1e1e1e;
             color: #fff;
             padding: 15px;
@@ -189,45 +187,32 @@
             display: block;
             margin-top: 5px;
         }
-        .cooldown-icon {
-            width: 20px;
-            height: 20px;
+        .upkeep-button {
+            color: var(--default-blue-color);
             cursor: pointer;
-            margin: 5px;
-            vertical-align: middle;
-            filter: brightness(1.5);
+            margin-right: 10px;
+            background: none;
+            border: none;
+            font-size: 14px;
         }
     `);
 
     // --- Main Function ---
-    async function addIconAndCheck(retryCount = 0) {
-        if (document.querySelector('.cooldown-icon')) {
-            console.log("Cooldown icon already exists, skipping creation.");
+    async function addButtonAndCheck() {
+        if (document.querySelector('.upkeep-button')) {
+            console.log("Upkeep button already exists, skipping creation.");
             return;
         }
 
-        console.log("Attempting to add upkeep telemetry icon...");
+        console.log("Initializing upkeep telemetry for Private Island...");
 
-        // Target the cooldowns area under regen bars
-        const cooldownTarget = document.querySelector('#sidebarroot div[class*="status-icons"]') || 
-                              document.querySelector('#sidebarroot div[class*="cooldowns"]') || 
-                              document.querySelector('#sidebarroot');
-        if (!cooldownTarget) {
-            if (retryCount < MAX_RETRIES) {
-                console.error(`Cooldown area not found. Retrying (${retryCount + 1}/${MAX_RETRIES}) in 2s...`);
-                setTimeout(() => addIconAndCheck(retryCount + 1), 2000);
-            } else {
-                console.error("Failed to find cooldown area after max retries. Icon not added.");
-            }
-            return;
-        }
-
-        // Add Placeholder Icon (Dollar Sign SVG)
-        const icon = document.createElement('img');
-        icon.className = 'cooldown-icon';
-        icon.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAiIGhlaWdodD0iMjAiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cGF0aCBkPSJNMTIgMjJDMTcuNTIyIDIyIDIyIDE3LjUyMiAyMiAxMlM3LjQ3OCAyIDYgMiAxLjQ3OCAxMiAxMiAyWk0xMyAxN0gxMVYxOEgxMFYxN0g5VjE2SDExVjE1SDEyVjE2SDEzVjE3Wk0xMSAxM0gxM1YxNEgxMlYxNUgxMVYxNEgxMFYxM0g5VjEySDExVjExSDEyVjEySDEzVjEzWiIgZmlsbD0iI2ZmZiIvPjwvc3ZnPg==';
-        icon.title = 'Upkeep Telemetry';
-        cooldownTarget.appendChild(icon);
+        // Add Button Under Navbar
+        const navbarTarget = document.querySelector('div.content-title > h4') || document.body;
+        const upkeepButton = document.createElement('button');
+        upkeepButton.className = 'upkeep-button';
+        upkeepButton.id = 'UpkeepButton';
+        upkeepButton.textContent = 'Loading Upkeep...';
+        navbarTarget.appendChild(upkeepButton);
 
         // Create Telemetry Panel
         const panel = document.createElement('div');
@@ -238,7 +223,7 @@
         await updateUI();
 
         // Toggle Panel
-        icon.addEventListener('click', () => {
+        upkeepButton.addEventListener('click', () => {
             panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
         });
 
@@ -256,7 +241,10 @@
     // --- Update UI ---
     async function updateUI() {
         const myTurn = await isMyTurn(apiToken);
-        const upkeepButtonText = upkeepCost ? `Upkeep: $${upkeepCost.toLocaleString()}` : 'Loading Upkeep...';
+        const upkeepButton = document.getElementById('UpkeepButton');
+        const statusText = myTurn ? 'Your Turn' : `${otherPlayer}'s Turn`;
+        upkeepButton.textContent = `Upkeep: $${upkeepCost.toLocaleString()} - ${statusText}`;
+
         const panel = document.querySelector('.telemetry-panel');
         panel.innerHTML = `
             <div class="telemetry-header">
@@ -265,7 +253,7 @@
             </div>
             <div class="telemetry-content">
                 <p>Date: ${new Date().toLocaleDateString()}</p>
-                <button id="Upkeep">${upkeepButtonText}</button>
+                <button id="Upkeep">Go to Properties</button>
                 <button id="ResetKey">Reset API Key</button>
                 <p>Whose Turn: <span class="turn-indicator ${myTurn ? 'my-turn' : 'other-turn'}">${myTurn ? 'You' : otherPlayer}</span></p>
                 <p>Last Payment: ${lastPaymentDate || 'Not detected'}</p>
@@ -341,7 +329,7 @@
 
     // --- Fetch and Update Upkeep ---
     async function updateUpkeep(apiToken) {
-        const upkeepButton = document.getElementById('Upkeep');
+        const upkeepButton = document.getElementById('UpkeepButton');
         const resultSpan = document.getElementById('Result');
         upkeepButton.textContent = 'Loading Upkeep...';
 
@@ -386,22 +374,27 @@
             if (upkeepValue !== null) {
                 upkeepCost = upkeepValue;
                 GM_setValue('upkeepCost', upkeepCost);
-                upkeepButton.textContent = `Upkeep: $${upkeepCost.toLocaleString()}`;
                 resultSpan.textContent = 'Upkeep loaded from API.';
                 resultSpan.style.color = 'green';
             } else {
-                upkeepButton.textContent = `Upkeep: $${upkeepCost.toLocaleString()}`;
                 resultSpan.textContent = 'No PI found; using manual upkeep.';
                 resultSpan.style.color = 'orange';
             }
+
+            // Update button text after API call
+            const myTurn = await isMyTurn(apiToken);
+            const statusText = myTurn ? 'Your Turn' : `${otherPlayer}'s Turn`;
+            upkeepButton.textContent = `Upkeep: $${upkeepCost.toLocaleString()} - ${statusText}`;
         } catch (error) {
             console.error('Error updating upkeep:', error);
-            upkeepButton.textContent = `Upkeep: $${upkeepCost.toLocaleString()}`;
+            const myTurn = await isMyTurn(apiToken);
+            const statusText = myTurn ? 'Your Turn' : `${otherPlayer}'s Turn`;
+            upkeepButton.textContent = `Upkeep: $${upkeepCost.toLocaleString()} - ${statusText}`;
             resultSpan.textContent = error.message;
             resultSpan.style.color = 'red';
         }
     }
 
     // --- Initialize ---
-    addIconAndCheck();
+    addButtonAndCheck();
 })();
