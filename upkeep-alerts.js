@@ -173,32 +173,29 @@
             display: block;
             margin-top: 5px;
         }
-        .navbar-btn {
-            color: var(--default-blue-color);
+        .telemetry-icon {
+            width: 24px;
+            height: 24px;
             cursor: pointer;
-            margin-right: 10px;
-            background: none;
-            border: none;
-            font-size: 14px;
         }
     `);
 
     // --- Main Function ---
     async function addButtonAndCheck() {
-        if (document.querySelector('.navbar-btn')) {
-            console.log("Navbar button already exists, skipping creation.");
+        if (document.querySelector('.telemetry-icon')) {
+            console.log("Telemetry icon already exists, skipping creation.");
             return;
         }
 
         console.log("Initializing upkeep telemetry for Private Island...");
 
-        // Add Toggle Button Under Navbar
-        const navbarTarget = document.querySelector('div.content-title > h4') || document.body;
-        const toggleButton = document.createElement('button');
-        toggleButton.className = 'navbar-btn';
-        toggleButton.id = 'ToggleTelemetry';
-        toggleButton.textContent = 'Upkeep Telemetry';
-        navbarTarget.appendChild(toggleButton);
+        // Add Telemetry Icon to Cooldown Area
+        const cooldownTarget = document.querySelector('.cooldown-icons') || document.body;
+        const telemetryIcon = document.createElement('img');
+        telemetryIcon.className = 'telemetry-icon';
+        telemetryIcon.src = 'https://via.placeholder.com/24'; // Placeholder icon URL
+        telemetryIcon.alt = 'Telemetry';
+        cooldownTarget.appendChild(telemetryIcon);
 
         // Create Telemetry Panel
         const panel = document.createElement('div');
@@ -209,7 +206,7 @@
         await updateUI();
 
         // Toggle Panel
-        toggleButton.addEventListener('click', () => {
+        telemetryIcon.addEventListener('click', () => {
             panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
         });
 
