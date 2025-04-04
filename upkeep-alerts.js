@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Upkeep Alerts
 // @namespace    http://tampermonkey.net/
-// @version      2025-04-04
-// @description  Helps manage shared Private Island upkeep on Torn.com with telemetry, notifications, and API integration for tornPDA.
+// @version      2025-04-04.1
+// @description  Helps manage shared Private Island upkeep on Torn.com with telemetry, notifications, API integration, and payment detection for tornPDA.
 // @author       Hitful (enhanced by Grok/xAI)
 // @match        https://www.torn.com/*
 // @match        https://tornpda.com/*
@@ -21,23 +21,67 @@
 
     // --- Configuration Defaults ---
     const CHECK_INTERVAL = 60 * 60 * 1000; // Check every hour
-    const DEFAULT_API_KEY = 'YOUR_API_KEY_HERE'; // Replace with your API key or leave for prompt
+    const DEFAULT_API_KEY = 'YOUR_API_KEY_HERE';
     const PROPERTIES_PAGE = 'https://www.torn.com/properties.php';
-    const DEFAULT_UPKEEP_COST = 352500; // $352,500/day for shared PI
+    const DEFAULT_UPKEEP_COST = 352500; // $352,500/day
     const NOTIFICATION_TIME = "07:00"; // 07:00 AM PDT
 
     // --- Load Stored Settings ---
     let apiToken = GM_getValue('tornApiToken', localStorage.getItem('tornApiToken') || DEFAULT_API_KEY);
-    let startDate = GM_getValue('startDate', '2025-04-01'); // Default start date
+    let startDate = GM_getValue('startDate', '2025-04-01');
     let otherPlayer = GM_getValue('otherPlayer', 'Other Player');
     let upkeepCost = GM_getValue('upkeepCost', DEFAULT_UPKEEP_COST);
+    let lastPaymentDate = GM_getValue('lastPaymentDate', null);
 
-    // --- Calculate Whose Turn ---
-    function isMyTurn() {
+    // --- Calculate Whose Turn (Fallback) ---
+    function isMyTurnFallback() {
         const today = new Date();
         const start = new Date(startDate);
         const diffDays = Math.floor((today - start) / (1000 * 60 * 60 * 24));
         return diffDays % 2 === 0; // Even days = your turn, odd = other player's
+    }
+
+    // --- Check Financial History for Payment ---
+    async function checkPaymentHistory(apiToken) {
+        try {
+            const response = await fetch(`https://api.torn.com/user/?selections=personalstats&key=${apiToken}`);
+            const data = await response.json();
+            if (data.error) throw new Error(`API error: ${data.error.error}`);
+
+            const moneyOut = data.personalstats.moneyout || 0;
+            const lastCheck = GM_getValue('lastMoneyOut', 0);
+
+            if (moneyOut > lastCheck) {
+                const diff = moneyOut - lastCheck;
+                if (diff === upkeepCost) {
+                    const now = new Date().toISOString().split('T')[0];
+                    GM_setValue('lastPaymentDate', now);
+                    GM_setValue('lastMoneyOut', moneyOut);
+                    return { paid: true, date: now };
+                }
+            }
+            GM_setValue('lastMoneyOut', moneyOut);
+            return { paid: false, date: lastPaymentDate };
+        } catch (error) {
+            console.error('Error checking payment history:', error);
+            return { paid: false, date: lastPaymentDate };
+        }
+    }
+
+    // --- Determine Whose Turn Based on Payment ---
+    async function isMyTurn(apiToken) {
+        const payment = await checkPaymentHistory(apiToken);
+        if (payment.paid) {
+            lastPaymentDate = payment.date;
+            return false; // If you just paid, it’s the other player’s turn next
+        }
+        if (lastPaymentDate) {
+            const today = new Date();
+            const lastPaid = new Date(lastPaymentDate);
+            const diffDays = Math.floor((today - lastPaid) / (1000 * 60 * 60 * 24));
+            return diffDays % 2 === 1; // Odd days after payment = your turn
+        }
+        return isMyTurnFallback(); // Fallback if no payment history
     }
 
     // --- Schedule Notification ---
@@ -48,15 +92,16 @@
         nextNotify.setHours(parseInt(hours), parseInt(minutes), 0, 0);
 
         if (now > nextNotify) {
-            nextNotify.setDate(nextNotify.getDate() + 1); // Next day if past time
+            nextNotify.setDate(nextNotify.getDate() + 1);
         }
 
         const timeUntil = nextNotify - now;
-        setTimeout(() => {
-            if (Notification.permission === "granted" && isMyTurn()) {
+        setTimeout(async () => {
+            const myTurn = await isMyTurn(apiToken);
+            if (Notification.permission === "granted" && myTurn) {
                 new Notification(`It’s your turn to pay $${upkeepCost.toLocaleString()} for PI upkeep today!`);
             }
-            scheduleNotification(); // Reschedule for next day
+            scheduleNotification();
         }, timeUntil);
     }
 
@@ -65,7 +110,7 @@
         Notification.requestPermission();
     }
 
-    // --- Add Styles for Modern Telemetry UI ---
+    // --- Add Styles ---
     GM_addStyle(`
         .telemetry-panel {
             position: fixed;
@@ -81,6 +126,7 @@
             width: 300px;
             max-height: 80vh;
             overflow-y: auto;
+            display: none;
         }
         .telemetry-header {
             font-size: 18px;
@@ -127,25 +173,47 @@
             display: block;
             margin-top: 5px;
         }
+        .navbar-btn {
+            color: var(--default-blue-color);
+            cursor: pointer;
+            margin-right: 10px;
+            background: none;
+            border: none;
+            font-size: 14px;
+        }
     `);
 
-    // --- Main Function to Add UI and Check Upkeep ---
-    function addButtonAndCheck() {
-        if (document.querySelector('.telemetry-panel')) {
-            console.log("Telemetry panel already exists, skipping creation.");
+    // --- Main Function ---
+    async function addButtonAndCheck() {
+        if (document.querySelector('.navbar-btn')) {
+            console.log("Navbar button already exists, skipping creation.");
             return;
         }
 
         console.log("Initializing upkeep telemetry for Private Island...");
 
+        // Add Toggle Button Under Navbar
+        const navbarTarget = document.querySelector('div.content-title > h4') || document.body;
+        const toggleButton = document.createElement('button');
+        toggleButton.className = 'navbar-btn';
+        toggleButton.id = 'ToggleTelemetry';
+        toggleButton.textContent = 'Upkeep Telemetry';
+        navbarTarget.appendChild(toggleButton);
+
+        // Create Telemetry Panel
         const panel = document.createElement('div');
         panel.className = 'telemetry-panel';
         document.body.appendChild(panel);
 
         // Initial UI setup
-        updateUI();
+        await updateUI();
 
-        // Check API token and prompt if needed
+        // Toggle Panel
+        toggleButton.addEventListener('click', () => {
+            panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
+        });
+
+        // Check API token
         if (!apiToken || apiToken === DEFAULT_API_KEY) {
             promptForApiToken();
         } else {
@@ -156,10 +224,11 @@
         scheduleNotification();
     }
 
-    // --- Update UI with Telemetry Data ---
-    function updateUI() {
-        const myTurn = isMyTurn();
+    // --- Update UI ---
+    async function updateUI() {
+        const myTurn = await isMyTurn(apiToken);
         const upkeepButtonText = upkeepCost ? `Upkeep: $${upkeepCost.toLocaleString()}` : 'Loading Upkeep...';
+        const panel = document.querySelector('.telemetry-panel');
         panel.innerHTML = `
             <div class="telemetry-header">
                 <span>Upkeep Telemetry</span>
@@ -170,6 +239,7 @@
                 <button id="Upkeep">${upkeepButtonText}</button>
                 <button id="ResetKey">Reset API Key</button>
                 <p>Whose Turn: <span class="turn-indicator ${myTurn ? 'my-turn' : 'other-turn'}">${myTurn ? 'You' : otherPlayer}</span></p>
+                <p>Last Payment: ${lastPaymentDate || 'Not detected'}</p>
                 <span class="result-span" id="Result">Loading...</span>
             </div>
             <div class="settings-tab" id="settingsTab">
@@ -188,7 +258,6 @@
         document.getElementById('Upkeep').addEventListener('click', () => {
             window.location.href = PROPERTIES_PAGE;
         });
-
         document.getElementById('ResetKey').addEventListener('click', promptForApiToken);
 
         const toggleBtn = document.getElementById('toggleSettings');
@@ -241,14 +310,14 @@
         }
     }
 
-    // --- Fetch and Update Upkeep from API ---
+    // --- Fetch and Update Upkeep ---
     async function updateUpkeep(apiToken) {
         const upkeepButton = document.getElementById('Upkeep');
         const resultSpan = document.getElementById('Result');
         upkeepButton.textContent = 'Loading Upkeep...';
 
         try {
-            // Step 1: Fetch player ID from current page or API
+            // Fetch player ID
             let userId = new URLSearchParams(window.location.search).get('XID');
             if (!userId) {
                 const userResponse = await fetch(`https://api.torn.com/user/?selections=basic&key=${apiToken}`);
@@ -257,7 +326,7 @@
                 userId = userData.player_id;
             }
 
-            // Step 2: Fetch property types to find "Private Island" ID
+            // Fetch property types
             const propTypesResponse = await fetch(`https://api.torn.com/properties?key=${apiToken}`);
             const propTypesData = await propTypesResponse.json();
             if (propTypesData.error) throw new Error(`API error: ${propTypesData.error.error}`);
@@ -271,7 +340,7 @@
             }
             if (!privateIslandId) throw new Error('Private Island property type not found.');
 
-            // Step 3: Fetch player properties to get upkeep
+            // Fetch player properties
             const playerResponse = await fetch(`https://api.torn.com/user/${userId}?selections=properties&key=${apiToken}`);
             const playerData = await playerResponse.json();
             if (playerData.error) throw new Error(`API error: ${playerData.error.error}`);
@@ -286,7 +355,7 @@
             }
 
             if (upkeepValue !== null) {
-                upkeepCost = upkeepValue; // Update stored value if API provides it
+                upkeepCost = upkeepValue;
                 GM_setValue('upkeepCost', upkeepCost);
                 upkeepButton.textContent = `Upkeep: $${upkeepCost.toLocaleString()}`;
                 resultSpan.textContent = 'Upkeep loaded from API.';
@@ -304,6 +373,6 @@
         }
     }
 
-    // --- Initialize the Script ---
+    // --- Initialize ---
     addButtonAndCheck();
 })();
