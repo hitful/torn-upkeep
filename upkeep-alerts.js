@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Upkeep Alerts
-// @namespace    http://tampermonkey.net/
+// @namespace    https://github.com/hitful/torn-upkeep/tree/main
 // @version      2025-04-04.12
 // @description  Helps manage shared property upkeep on Torn.com with accurate balance tracking and payment detection.
 // @author       Hitful (enhanced by Grok/xAI)
