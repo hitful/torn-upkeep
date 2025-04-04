@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Upkeep Alerts
 // @namespace    http://tampermonkey.net/
-// @version      2025-04-04.9
-// @description  Helps manage shared Private Island upkeep on Torn.com with telemetry, notifications, API integration, payment detection, and balance display.
+// @version      2025-04-04.11
+// @description  Helps manage shared Private Island upkeep on Torn.com with telemetry, notifications, API integration, payment detection, and live amount owed.
 // @author       Hitful (enhanced by Grok/xAI)
 // @match        https://www.torn.com/*
 // @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
@@ -33,6 +33,8 @@
     let lastPaymentDate = GM_getValue('lastPaymentDate', null);
     let panelVisible = GM_getValue('panelVisible', false);
     let playerMoney = 0; // Store player's money balance
+    let turnOverride = GM_getValue('turnOverride', null); // null, 'me', or 'other'
+    let amountOwed = DEFAULT_UPKEEP_COST; // Live amount owed
 
     // --- Utility Functions ---
     function waitForElement(selector, callback, timeout = 10000) {
@@ -49,9 +51,18 @@
         }, 100);
     }
 
-    // --- Calculate Whose Turn (Fallback) ---
+    // --- Get Torn Day (UTC) ---
+    function getTornDay() {
+        const now = new Date();
+        return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    }
+
+    // --- Calculate Whose Turn Based on Torn Time ---
     function isMyTurnFallback() {
-        const today = new Date();
+        if (turnOverride) {
+            return turnOverride === 'me';
+        }
+        const today = getTornDay();
         const start = new Date(startDate);
         const diffDays = Math.floor((today - start) / (1000 * 60 * 60 * 24));
         return diffDays % 2 === 0; // Even days = your turn
@@ -67,7 +78,7 @@
             const events = data.events || [];
             console.log('Events from API:', events); // Debug: Log the events
 
-            const today = new Date().toISOString().split('T')[0];
+            const today = getTornDay().toISOString().split('T')[0];
             let paymentFound = false;
             let paymentDate = null;
 
@@ -81,8 +92,10 @@
                 const eventText = event.event.toLowerCase();
                 console.log(`Event: ${eventText}, Date: ${eventDate}`); // Debug: Log each event
 
-                // Broaden the matching criteria for upkeep payment
-                if (eventDate === today && eventText.includes('upkeep') && (eventText.includes('private island') || eventText.includes('property'))) {
+                // Check for upkeep payment of $352,500 or the current upkeep cost
+                if (eventDate === today && 
+                    (eventText.includes('upkeep') || eventText.includes('property')) && 
+                    (eventText.includes(upkeepCost.toString()) || eventText.includes('private island'))) {
                     paymentFound = true;
                     paymentDate = today;
                     GM_setValue('lastPaymentDate', today);
@@ -90,6 +103,8 @@
                 }
             }
 
+            // Update amount owed based on payment status
+            amountOwed = paymentFound ? 0 : upkeepCost;
             return { paid: paymentFound, date: paymentDate || lastPaymentDate };
         } catch (error) {
             console.error('Error checking payment history:', error);
@@ -105,10 +120,10 @@
             return false; // You paid today, other player's turn
         }
         if (lastPaymentDate) {
-            const today = new Date();
+            const today = getTornDay();
             const lastPaid = new Date(lastPaymentDate);
             const diffDays = Math.floor((today - lastPaid) / (1000 * 60 * 60 * 24));
-            return diffDays % 2 === 1; // Odd days after payment = your turn
+            return turnOverride ? turnOverride === 'me' : diffDays % 2 === 1; // Odd days after payment = your turn
         }
         return isMyTurnFallback();
     }
@@ -126,9 +141,9 @@
 
         setTimeout(async () => {
             const myTurn = await isMyTurn(apiToken);
-            if (myTurn) {
+            if (myTurn && amountOwed > 0) {
                 const localNotifyTime = new Date(notifyTimeUTC).toLocaleTimeString();
-                notifyUser(`It’s your turn to pay $${upkeepCost.toLocaleString()} for PI upkeep today! Notification set for ${localNotifyTime}.`);
+                notifyUser(`It’s your turn to pay $${amountOwed.toLocaleString()} for PI upkeep today! Notification set for ${localNotifyTime}.`);
             }
             scheduleNotification();
         }, Math.max(notifyTimeUTC - new Date(), 0));
@@ -162,8 +177,10 @@
         .my-turn { background: #4caf50; }
         .other-turn { background: #2196f3; }
         .settings-tab { margin-top: 15px; display: none; }
-        .settings-tab input { width: 100%; padding: 8px; margin: 8px 0; border-radius: 4px; border: none; box-sizing: border-box; }
+        .settings-tab input, .settings-tab select { width: 100%; padding: 8px; margin: 8px 0; border-radius: 4px; border: none; box-sizing: border-box; }
         .toggle-btn { cursor: pointer; color: #ff9800; }
+        .close-btn { cursor: pointer; color: #ff4444; }
+        .save-btn { color: #4caf50; cursor: pointer; background: none; border: none; padding: 5px; margin: 5px 0; }
         .result-span { font-size: 12px; font-weight: 100; display: block; margin-top: 10px; }
         .upkeep-button { color: var(--default-blue-color); cursor: pointer; margin-right: 10px; background: none; border: none; font-size: 14px; }
     `);
@@ -207,7 +224,7 @@
         const upkeepButton = document.getElementById('UpkeepButton');
         if (upkeepButton) {
             const statusText = myTurn ? 'Your Turn' : `${otherPlayer}'s Turn`;
-            upkeepButton.textContent = `Upkeep: $${upkeepCost.toLocaleString()} | Money: $${playerMoney.toLocaleString()} - ${statusText}`;
+            upkeepButton.textContent = `Owed: $${amountOwed.toLocaleString()} - ${statusText}`;
         }
 
         const panel = document.querySelector('.telemetry-panel');
@@ -216,11 +233,15 @@
         panel.innerHTML = `
             <div class="telemetry-header">
                 <span>Upkeep Telemetry</span>
-                <span class="toggle-btn" id="toggleSettings">[Settings]</span>
+                <div>
+                    <span class="toggle-btn" id="toggleSettings">[Settings]</span>
+                    <span class="close-btn" id="closePanel">[Close]</span>
+                </div>
             </div>
             <div class="telemetry-content">
                 <p><strong>Date:</strong> ${new Date().toLocaleDateString()}</p>
                 <p><button id="Upkeep">Go to Properties</button></p>
+                <p><strong>Amount Owed:</strong> $${amountOwed.toLocaleString()}</p>
                 <p><strong>Whose Turn:</strong> <button id="OtherPlayer" class="turn-indicator ${myTurn ? 'my-turn' : 'other-turn'}">${myTurn ? 'You' : otherPlayer}</button></p>
                 <p><strong>Last Payment:</strong> ${lastPaymentDate || 'Not detected'}</p>
                 <p><strong>Money Balance:</strong> $${playerMoney.toLocaleString()}</p>
@@ -232,6 +253,12 @@
                 <input type="date" id="startDateInput" value="${startDate}">
                 <input type="text" id="otherPlayerInput" placeholder="Other Player Name" value="${otherPlayer}">
                 <input type="number" id="upkeepCostInput" placeholder="Upkeep Cost" value="${upkeepCost}">
+                <select id="turnOverrideInput">
+                    <option value="" ${!turnOverride ? 'selected' : ''}>Auto (Day-Based)</option>
+                    <option value="me" ${turnOverride === 'me' ? 'selected' : ''}>Force My Turn</option>
+                    <option value="other" ${turnOverride === 'other' ? 'selected' : ''}>Force ${otherPlayer}'s Turn</option>
+                </select>
+                <button class="save-btn" id="saveSettings">Save Settings</button>
             </div>
         `;
 
@@ -251,7 +278,6 @@
                 const newName = prompt("Enter the name of the other player:", otherPlayer);
                 if (newName && newName.trim()) {
                     otherPlayer = newName.trim();
-                    GM_setValue('otherPlayer', otherPlayer);
                     updateUI();
                 }
             });
@@ -265,14 +291,17 @@
             });
         }
 
+        const closeBtn = document.getElementById('closePanel');
+        if (closeBtn) {
+            closeBtn.addEventListener('click', () => {
+                panel.style.display = 'none'; // Close without toggling panelVisible
+            });
+        }
+
         const apiKeyInput = document.getElementById('apiKeyInput');
         if (apiKeyInput) {
             apiKeyInput.addEventListener('change', (e) => {
                 apiToken = e.target.value;
-                GM_setValue('tornApiToken', apiToken);
-                localStorage.setItem('tornApiToken', apiToken);
-                updateUI();
-                updateUpkeep(apiToken);
             });
         }
 
@@ -280,8 +309,6 @@
         if (resetKeyButton) {
             resetKeyButton.addEventListener('click', () => {
                 apiToken = DEFAULT_API_KEY;
-                GM_setValue('tornApiToken', apiToken);
-                localStorage.setItem('tornApiToken', apiToken);
                 updateUI();
                 promptForApiToken();
             });
@@ -291,8 +318,6 @@
         if (startDateInput) {
             startDateInput.addEventListener('change', (e) => {
                 startDate = e.target.value;
-                GM_setValue('startDate', startDate);
-                updateUI();
             });
         }
 
@@ -300,8 +325,6 @@
         if (otherPlayerInput) {
             otherPlayerInput.addEventListener('change', (e) => {
                 otherPlayer = e.target.value;
-                GM_setValue('otherPlayer', otherPlayer);
-                updateUI();
             });
         }
 
@@ -309,8 +332,31 @@
         if (upkeepCostInput) {
             upkeepCostInput.addEventListener('change', (e) => {
                 upkeepCost = parseInt(e.target.value) || DEFAULT_UPKEEP_COST;
+            });
+        }
+
+        const turnOverrideInput = document.getElementById('turnOverrideInput');
+        if (turnOverrideInput) {
+            turnOverrideInput.addEventListener('change', (e) => {
+                turnOverride = e.target.value || null;
+            });
+        }
+
+        const saveSettingsButton = document.getElementById('saveSettings');
+        if (saveSettingsButton) {
+            saveSettingsButton.addEventListener('click', () => {
+                GM_setValue('tornApiToken', apiToken);
+                localStorage.setItem('tornApiToken', apiToken);
+                GM_setValue('startDate', startDate);
+                GM_setValue('otherPlayer', otherPlayer);
                 GM_setValue('upkeepCost', upkeepCost);
+                GM_setValue('turnOverride', turnOverride);
+                if (resultSpan) {
+                    resultSpan.textContent = 'Settings saved.';
+                    resultSpan.style.color = 'green';
+                }
                 updateUI();
+                updateUpkeep(apiToken);
             });
         }
     }
@@ -375,13 +421,13 @@
 
             const myTurn = await isMyTurn(apiToken);
             const statusText = myTurn ? 'Your Turn' : `${otherPlayer}'s Turn`;
-            upkeepButton.textContent = `Upkeep: $${upkeepCost.toLocaleString()} | Money: $${playerMoney.toLocaleString()} - ${statusText}`;
+            upkeepButton.textContent = `Owed: $${amountOwed.toLocaleString()} - ${statusText}`;
             updateUI(); // Refresh UI to show updated balance
         } catch (error) {
             console.error('Error updating upkeep:', error);
             const myTurn = await isMyTurn(apiToken);
             const statusText = myTurn ? 'Your Turn' : `${otherPlayer}'s Turn`;
-            upkeepButton.textContent = `Upkeep: $${upkeepCost.toLocaleString()} | Money: $${playerMoney.toLocaleString()} - ${statusText}`;
+            upkeepButton.textContent = `Owed: $${amountOwed.toLocaleString()} - ${statusText}`;
             resultSpan.textContent = error.message;
             resultSpan.style.color = 'red';
         }
