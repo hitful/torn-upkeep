@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Upkeep Alerts
 // @namespace    http://tampermonkey.net/
-// @version      2025-04-04.2
+// @version      2025-04-04.3
 // @description  Helps manage shared Private Island upkeep on Torn.com with telemetry, notifications, API integration, and payment detection for tornPDA.
 // @author       Hitful (enhanced by Grok/xAI)
 // @match        https://www.torn.com/*
@@ -25,6 +25,7 @@
     const PROPERTIES_PAGE = 'https://www.torn.com/properties.php';
     const DEFAULT_UPKEEP_COST = 352500; // $352,500/day
     const NOTIFICATION_TIME = "07:00"; // 07:00 AM PDT
+    const MAX_RETRIES = 5; // Retry up to 5 times for cooldown area
 
     // --- Load Stored Settings ---
     let apiToken = GM_getValue('tornApiToken', localStorage.getItem('tornApiToken') || DEFAULT_API_KEY);
@@ -84,7 +85,7 @@
         return isMyTurnFallback(); // Fallback if no payment history
     }
 
-    // --- Schedule Notification ---
+    // --- Schedule Notification with Fallback ---
     function scheduleNotification() {
         const now = new Date();
         const [hours, minutes] = NOTIFICATION_TIME.split(":");
@@ -98,16 +99,31 @@
         const timeUntil = nextNotify - now;
         setTimeout(async () => {
             const myTurn = await isMyTurn(apiToken);
-            if (Notification.permission === "granted" && myTurn) {
-                new Notification(`It’s your turn to pay $${upkeepCost.toLocaleString()} for PI upkeep today!`);
+            if (myTurn) {
+                if (typeof Notification !== 'undefined' && Notification.permission === "granted") {
+                    new Notification(`It’s your turn to pay $${upkeepCost.toLocaleString()} for PI upkeep today!`);
+                } else {
+                    // Fallback: Update UI with a message
+                    const resultSpan = document.getElementById('Result');
+                    if (resultSpan) {
+                        resultSpan.textContent = 'It’s your turn to pay! (Notifications unavailable)';
+                        resultSpan.style.color = 'yellow';
+                    }
+                }
             }
             scheduleNotification();
         }, timeUntil);
     }
 
-    // --- Request Notification Permission ---
-    if (Notification.permission !== "granted" && Notification.permission !== "denied") {
-        Notification.requestPermission();
+    // --- Request Notification Permission with Fallback ---
+    if (typeof Notification !== 'undefined') {
+        if (Notification.permission !== "granted" && Notification.permission !== "denied") {
+            Notification.requestPermission().catch(err => {
+                console.error('Notification permission request failed:', err);
+            });
+        }
+    } else {
+        console.warn('Notification API not supported in this browser.');
     }
 
     // --- Add Styles ---
@@ -179,24 +195,30 @@
             cursor: pointer;
             margin: 5px;
             vertical-align: middle;
-            filter: brightness(1.5); /* Match Torn's icon brightness */
+            filter: brightness(1.5);
         }
     `);
 
     // --- Main Function ---
-    async function addIconAndCheck() {
+    async function addIconAndCheck(retryCount = 0) {
         if (document.querySelector('.cooldown-icon')) {
             console.log("Cooldown icon already exists, skipping creation.");
             return;
         }
 
-        console.log("Initializing upkeep telemetry for Private Island...");
+        console.log("Attempting to add upkeep telemetry icon...");
 
         // Target the cooldowns area under regen bars
-        const cooldownTarget = document.querySelector('#sidebarroot div[class*="cooldowns"]') || document.querySelector('#sidebarroot');
+        const cooldownTarget = document.querySelector('#sidebarroot div[class*="status-icons"]') || 
+                              document.querySelector('#sidebarroot div[class*="cooldowns"]') || 
+                              document.querySelector('#sidebarroot');
         if (!cooldownTarget) {
-            console.error("Cooldown area not found. Retrying in 1s...");
-            setTimeout(addIconAndCheck, 1000); // Retry if sidebar not loaded
+            if (retryCount < MAX_RETRIES) {
+                console.error(`Cooldown area not found. Retrying (${retryCount + 1}/${MAX_RETRIES}) in 2s...`);
+                setTimeout(() => addIconAndCheck(retryCount + 1), 2000);
+            } else {
+                console.error("Failed to find cooldown area after max retries. Icon not added.");
+            }
             return;
         }
 
@@ -204,7 +226,7 @@
         const icon = document.createElement('img');
         icon.className = 'cooldown-icon';
         icon.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAiIGhlaWdodD0iMjAiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cGF0aCBkPSJNMTIgMjJDMTcuNTIyIDIyIDIyIDE3LjUyMiAyMiAxMlM3LjQ3OCAyIDYgMiAxLjQ3OCAxMiAxMiAyWk0xMyAxN0gxMVYxOEgxMFYxN0g5VjE2SDExVjE1SDEyVjE2SDEzVjE3Wk0xMSAxM0gxM1YxNEgxMlYxNUgxMVYxNEgxMFYxM0g5VjEySDExVjExSDEyVjEySDEzVjEzWiIgZmlsbD0iI2ZmZiIvPjwvc3ZnPg==';
-        icon.title = 'Upkeep Telemetry'; // Tooltip
+        icon.title = 'Upkeep Telemetry';
         cooldownTarget.appendChild(icon);
 
         // Create Telemetry Panel
@@ -245,7 +267,7 @@
                 <p>Date: ${new Date().toLocaleDateString()}</p>
                 <button id="Upkeep">${upkeepButtonText}</button>
                 <button id="ResetKey">Reset API Key</button>
-                <p>Whose Turn: <span class="turn-indicator ${myTurn ? 'my-turn' : 'other-turn'}">${myTurn ? 'You' : otherPlayer}</,numberp>
+                <p>Whose Turn: <span class="turn-indicator ${myTurn ? 'my-turn' : 'other-turn'}">${myTurn ? 'You' : otherPlayer}</span></p>
                 <p>Last Payment: ${lastPaymentDate || 'Not detected'}</p>
                 <span class="result-span" id="Result">Loading...</span>
             </div>
