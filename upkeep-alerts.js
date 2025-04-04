@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Upkeep Alerts
 // @namespace    http://tampermonkey.net/
-// @version      2025-04-04.8
-// @description  Helps manage shared Private Island upkeep on Torn.com with telemetry, notifications, API integration, and payment detection.
+// @version      2025-04-04.9
+// @description  Helps manage shared Private Island upkeep on Torn.com with telemetry, notifications, API integration, payment detection, and balance display.
 // @author       Hitful (enhanced by Grok/xAI)
 // @match        https://www.torn.com/*
 // @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
@@ -32,6 +32,7 @@
     let upkeepCost = GM_getValue('upkeepCost', DEFAULT_UPKEEP_COST);
     let lastPaymentDate = GM_getValue('lastPaymentDate', null);
     let panelVisible = GM_getValue('panelVisible', false);
+    let playerMoney = 0; // Store player's money balance
 
     // --- Utility Functions ---
     function waitForElement(selector, callback, timeout = 10000) {
@@ -206,10 +207,12 @@
         const upkeepButton = document.getElementById('UpkeepButton');
         if (upkeepButton) {
             const statusText = myTurn ? 'Your Turn' : `${otherPlayer}'s Turn`;
-            upkeepButton.textContent = `Upkeep: $${upkeepCost.toLocaleString()} - ${statusText}`;
+            upkeepButton.textContent = `Upkeep: $${upkeepCost.toLocaleString()} | Money: $${playerMoney.toLocaleString()} - ${statusText}`;
         }
 
         const panel = document.querySelector('.telemetry-panel');
+        if (!panel) return;
+
         panel.innerHTML = `
             <div class="telemetry-header">
                 <span>Upkeep Telemetry</span>
@@ -220,6 +223,7 @@
                 <p><button id="Upkeep">Go to Properties</button></p>
                 <p><strong>Whose Turn:</strong> <button id="OtherPlayer" class="turn-indicator ${myTurn ? 'my-turn' : 'other-turn'}">${myTurn ? 'You' : otherPlayer}</button></p>
                 <p><strong>Last Payment:</strong> ${lastPaymentDate || 'Not detected'}</p>
+                <p><strong>Money Balance:</strong> $${playerMoney.toLocaleString()}</p>
                 <span class="result-span" id="Result">${apiToken && apiToken !== DEFAULT_API_KEY ? 'API token found.' : 'No API token set.'}</span>
             </div>
             <div class="settings-tab" id="settingsTab">
@@ -232,57 +236,83 @@
         `;
 
         const resultSpan = document.getElementById('Result');
-        resultSpan.style.color = apiToken && apiToken !== DEFAULT_API_KEY ? 'green' : 'red';
+        if (resultSpan) {
+            resultSpan.style.color = apiToken && apiToken !== DEFAULT_API_KEY ? 'green' : 'red';
+        }
 
-        document.getElementById('Upkeep').addEventListener('click', () => window.location.href = PROPERTIES_PAGE);
-        document.getElementById('OtherPlayer').addEventListener('click', () => {
-            const newName = prompt("Enter the name of the other player:", otherPlayer);
-            if (newName && newName.trim()) {
-                otherPlayer = newName.trim();
-                GM_setValue('otherPlayer', otherPlayer);
-                updateUI();
-            }
-        });
+        const upkeepButtonLink = document.getElementById('Upkeep');
+        if (upkeepButtonLink) {
+            upkeepButtonLink.addEventListener('click', () => window.location.href = PROPERTIES_PAGE);
+        }
+
+        const otherPlayerButton = document.getElementById('OtherPlayer');
+        if (otherPlayerButton) {
+            otherPlayerButton.addEventListener('click', () => {
+                const newName = prompt("Enter the name of the other player:", otherPlayer);
+                if (newName && newName.trim()) {
+                    otherPlayer = newName.trim();
+                    GM_setValue('otherPlayer', otherPlayer);
+                    updateUI();
+                }
+            });
+        }
 
         const toggleBtn = document.getElementById('toggleSettings');
         const settingsTab = document.getElementById('settingsTab');
-        toggleBtn.addEventListener('click', () => {
-            settingsTab.style.display = settingsTab.style.display === 'block' ? 'none' : 'block';
-        });
+        if (toggleBtn && settingsTab) {
+            toggleBtn.addEventListener('click', () => {
+                settingsTab.style.display = settingsTab.style.display === 'block' ? 'none' : 'block';
+            });
+        }
 
-        document.getElementById('apiKeyInput').addEventListener('change', (e) => {
-            apiToken = e.target.value;
-            GM_setValue('tornApiToken', apiToken);
-            localStorage.setItem('tornApiToken', apiToken);
-            updateUI();
-            updateUpkeep(apiToken);
-        });
+        const apiKeyInput = document.getElementById('apiKeyInput');
+        if (apiKeyInput) {
+            apiKeyInput.addEventListener('change', (e) => {
+                apiToken = e.target.value;
+                GM_setValue('tornApiToken', apiToken);
+                localStorage.setItem('tornApiToken', apiToken);
+                updateUI();
+                updateUpkeep(apiToken);
+            });
+        }
 
-        document.getElementById('ResetKey').addEventListener('click', () => {
-            apiToken = DEFAULT_API_KEY;
-            GM_setValue('tornApiToken', apiToken);
-            localStorage.setItem('tornApiToken', apiToken);
-            updateUI();
-            promptForApiToken();
-        });
+        const resetKeyButton = document.getElementById('ResetKey');
+        if (resetKeyButton) {
+            resetKeyButton.addEventListener('click', () => {
+                apiToken = DEFAULT_API_KEY;
+                GM_setValue('tornApiToken', apiToken);
+                localStorage.setItem('tornApiToken', apiToken);
+                updateUI();
+                promptForApiToken();
+            });
+        }
 
-        document.getElementById('startDateInput').addEventListener('change', (e) => {
-            startDate = e.target.value;
-            GM_setValue('startDate', startDate);
-            updateUI();
-        });
+        const startDateInput = document.getElementById('startDateInput');
+        if (startDateInput) {
+            startDateInput.addEventListener('change', (e) => {
+                startDate = e.target.value;
+                GM_setValue('startDate', startDate);
+                updateUI();
+            });
+        }
 
-        document.getElementById('otherPlayerInput').addEventListener('change', (e) => {
-            otherPlayer = e.target.value;
-            GM_setValue('otherPlayer', otherPlayer);
-            updateUI();
-        });
+        const otherPlayerInput = document.getElementById('otherPlayerInput');
+        if (otherPlayerInput) {
+            otherPlayerInput.addEventListener('change', (e) => {
+                otherPlayer = e.target.value;
+                GM_setValue('otherPlayer', otherPlayer);
+                updateUI();
+            });
+        }
 
-        document.getElementById('upkeepCostInput').addEventListener('change', (e) => {
-            upkeepCost = parseInt(e.target.value) || DEFAULT_UPKEEP_COST;
-            GM_setValue('upkeepCost', upkeepCost);
-            updateUI();
-        });
+        const upkeepCostInput = document.getElementById('upkeepCostInput');
+        if (upkeepCostInput) {
+            upkeepCostInput.addEventListener('change', (e) => {
+                upkeepCost = parseInt(e.target.value) || DEFAULT_UPKEEP_COST;
+                GM_setValue('upkeepCost', upkeepCost);
+                updateUI();
+            });
+        }
     }
 
     // --- Prompt for API Token ---
@@ -293,11 +323,13 @@
             apiToken = newApiToken;
             GM_setValue('tornApiToken', apiToken);
             localStorage.setItem('tornApiToken', apiToken);
-            resultSpan.textContent = 'API token updated.';
-            resultSpan.style.color = 'green';
+            if (resultSpan) {
+                resultSpan.textContent = 'API token updated.';
+                resultSpan.style.color = 'green';
+            }
             updateUpkeep(apiToken);
             setInterval(() => updateUpkeep(apiToken), CHECK_INTERVAL);
-        } else {
+        } else if (resultSpan) {
             resultSpan.textContent = 'Invalid or no API token provided.';
             resultSpan.style.color = 'red';
         }
@@ -317,6 +349,9 @@
             const userResponse = await fetch(`https://api.torn.com/user/?selections=basic,properties,events&key=${apiToken}`);
             const userData = await userResponse.json();
             if (userData.error) throw new Error(`API error: ${userData.error.error}`);
+
+            // Fetch player money balance
+            playerMoney = userData.money || 0;
 
             const userId = userData.player_id;
             const properties = userData.properties || {};
@@ -340,12 +375,13 @@
 
             const myTurn = await isMyTurn(apiToken);
             const statusText = myTurn ? 'Your Turn' : `${otherPlayer}'s Turn`;
-            upkeepButton.textContent = `Upkeep: $${upkeepCost.toLocaleString()} - ${statusText}`;
+            upkeepButton.textContent = `Upkeep: $${upkeepCost.toLocaleString()} | Money: $${playerMoney.toLocaleString()} - ${statusText}`;
+            updateUI(); // Refresh UI to show updated balance
         } catch (error) {
             console.error('Error updating upkeep:', error);
             const myTurn = await isMyTurn(apiToken);
             const statusText = myTurn ? 'Your Turn' : `${otherPlayer}'s Turn`;
-            upkeepButton.textContent = `Upkeep: $${upkeepCost.toLocaleString()} - ${statusText}`;
+            upkeepButton.textContent = `Upkeep: $${upkeepCost.toLocaleString()} | Money: $${playerMoney.toLocaleString()} - ${statusText}`;
             resultSpan.textContent = error.message;
             resultSpan.style.color = 'red';
         }
