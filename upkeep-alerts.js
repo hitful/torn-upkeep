@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Upkeep Alerts
 // @namespace    http://tampermonkey.net/
-// @version      2025-04-04.5
+// @version      2025-04-04.7
 // @description  Helps manage shared Private Island upkeep on Torn.com with telemetry, notifications, API integration, and payment detection.
 // @author       Hitful (enhanced by Grok/xAI)
 // @match        https://www.torn.com/*
@@ -23,7 +23,7 @@
     const DEFAULT_API_KEY = 'YOUR_API_KEY_HERE';
     const PROPERTIES_PAGE = 'https://www.torn.com/properties.php';
     const DEFAULT_UPKEEP_COST = 352500; // $352,500/day
-    const NOTIFICATION_TIME = "07:00"; // 07:00 AM PDT
+    const NOTIFICATION_HOUR_OFFSET = 7; // Notify 7 hours before midnight UTC (adjustable)
 
     // --- Load Stored Settings ---
     let apiToken = GM_getValue('tornApiToken', localStorage.getItem('tornApiToken') || DEFAULT_API_KEY);
@@ -31,13 +31,29 @@
     let otherPlayer = GM_getValue('otherPlayer', 'Other Player');
     let upkeepCost = GM_getValue('upkeepCost', DEFAULT_UPKEEP_COST);
     let lastPaymentDate = GM_getValue('lastPaymentDate', null);
+    let panelVisible = GM_getValue('panelVisible', false);
+
+    // --- Utility Functions ---
+    function waitForElement(selector, callback, timeout = 10000) {
+        const start = Date.now();
+        const interval = setInterval(() => {
+            const element = document.querySelector(selector);
+            if (element) {
+                clearInterval(interval);
+                callback(element);
+            } else if (Date.now() - start > timeout) {
+                clearInterval(interval);
+                console.error(`Timeout waiting for ${selector}`);
+            }
+        }, 100);
+    }
 
     // --- Calculate Whose Turn (Fallback) ---
     function isMyTurnFallback() {
         const today = new Date();
         const start = new Date(startDate);
         const diffDays = Math.floor((today - start) / (1000 * 60 * 60 * 24));
-        return diffDays % 2 === 0; // Even days = your turn, odd = other player's
+        return diffDays % 2 === 0; // Even days = your turn
     }
 
     // --- Check Events for Upkeep Payment ---
@@ -49,30 +65,26 @@
 
             const events = data.events || {};
             const today = new Date().toISOString().split('T')[0];
-            let paymentFound = false;
-
             for (const event of Object.values(events)) {
                 const eventDate = new Date(event.timestamp * 1000).toISOString().split('T')[0];
                 if (eventDate === today && event.event.includes('upkeep') && event.event.includes('Private Island')) {
-                    paymentFound = true;
                     GM_setValue('lastPaymentDate', today);
                     return { paid: true, date: today };
                 }
             }
-
-            return { paid: paymentFound, date: lastPaymentDate };
+            return { paid: false, date: lastPaymentDate };
         } catch (error) {
             console.error('Error checking payment history:', error);
             return { paid: false, date: lastPaymentDate };
         }
     }
 
-    // --- Determine Whose Turn Based on Payment ---
+    // --- Determine Whose Turn ---
     async function isMyTurn(apiToken) {
         const payment = await checkPaymentHistory(apiToken);
         if (payment.paid) {
             lastPaymentDate = payment.date;
-            return false; // If you paid today, it’s the other player’s turn
+            return false; // You paid today, other player's turn
         }
         if (lastPaymentDate) {
             const today = new Date();
@@ -80,172 +92,96 @@
             const diffDays = Math.floor((today - lastPaid) / (1000 * 60 * 60 * 24));
             return diffDays % 2 === 1; // Odd days after payment = your turn
         }
-        return isMyTurnFallback(); // Fallback if no payment history
+        return isMyTurnFallback();
     }
 
-    // --- Schedule Notification with Fallback ---
+    // --- Schedule Notification Tied to Torn Time ---
     function scheduleNotification() {
         const now = new Date();
-        const [hours, minutes] = NOTIFICATION_TIME.split(":");
-        let nextNotify = new Date(now);
-        nextNotify.setHours(parseInt(hours), parseInt(minutes), 0, 0);
+        const nextMidnightUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0));
+        const notifyTimeUTC = new Date(nextMidnightUTC.getTime() - (NOTIFICATION_HOUR_OFFSET * 60 * 60 * 1000));
 
-        if (now > nextNotify) {
-            nextNotify.setDate(nextNotify.getDate() + 1);
+        const timeUntil = notifyTimeUTC - now;
+        if (timeUntil < 0) {
+            // If notify time has passed today, schedule for tomorrow
+            notifyTimeUTC.setUTCDate(notifyTimeUTC.getUTCDate() + 1);
         }
 
-        const timeUntil = nextNotify - now;
         setTimeout(async () => {
             const myTurn = await isMyTurn(apiToken);
             if (myTurn) {
-                if (typeof Notification !== 'undefined' && Notification.permission === "granted") {
-                    new Notification(`It’s your turn to pay $${upkeepCost.toLocaleString()} for PI upkeep today!`);
-                } else {
-                    const resultSpan = document.getElementById('Result');
-                    if (resultSpan) {
-                        resultSpan.textContent = 'It’s your turn to pay! (Notifications unavailable)';
-                        resultSpan.style.color = 'yellow';
-                    }
-                }
+                const localNotifyTime = new Date(notifyTimeUTC).toLocaleTimeString();
+                notifyUser(`It’s your turn to pay $${upkeepCost.toLocaleString()} for PI upkeep today! Notification set for ${localNotifyTime}.`);
             }
-            scheduleNotification();
-        }, timeUntil);
+            scheduleNotification(); // Reschedule for next day
+        }, Math.max(notifyTimeUTC - new Date(), 0));
     }
 
-    // --- Request Notification Permission with Fallback ---
-    if (typeof Notification !== 'undefined') {
-        if (Notification.permission !== "granted" && Notification.permission !== "denied") {
-            Notification.requestPermission().catch(err => {
-                console.error('Notification permission request failed:', err);
-            });
+    // --- Notify User with Fallback ---
+    function notifyUser(message) {
+        if (typeof Notification !== 'undefined' && Notification.permission === "granted") {
+            new Notification(message);
+        } else {
+            const resultSpan = document.getElementById('Result');
+            if (resultSpan) {
+                resultSpan.textContent = message + ' (Notifications unavailable)';
+                resultSpan.style.color = 'yellow';
+            }
         }
-    } else {
-        console.warn('Notification API not supported in this browser.');
+    }
+
+    // --- Request Notification Permission ---
+    if (typeof Notification !== 'undefined' && Notification.permission === "default") {
+        Notification.requestPermission().catch(err => console.error('Notification permission request failed:', err));
     }
 
     // --- Add Styles ---
     GM_addStyle(`
-        .telemetry-panel {
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            background: #1e1e1e;
-            color: #fff;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 4px 8px rgba(0,0,0,0.3);
-            font-family: Arial, sans-serif;
-            z-index: 1000;
-            width: 320px;
-            max-height: 80vh;
-            overflow-y: auto;
-            display: none;
-        }
-        .telemetry-header {
-            font-size: 18px;
-            margin-bottom: 15px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .telemetry-content p {
-            margin: 10px 0;
-        }
-        .telemetry-content button {
-            color: var(--default-blue-color);
-            cursor: pointer;
-            background: none;
-            border: none;
-            padding: 5px;
-            margin: 5px 0;
-        }
-        .turn-indicator {
-            padding: 5px 10px;
-            border-radius: 4px;
-            font-weight: bold;
-        }
+        .telemetry-panel { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: #1e1e1e; color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.3); font-family: Arial, sans-serif; z-index: 1000; width: 320px; max-height: 80vh; overflow-y: auto; }
+        .telemetry-header { font-size: 18px; margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center; }
+        .telemetry-content p { margin: 10px 0; }
+        .telemetry-content button, .settings-tab button { color: var(--default-blue-color); cursor: pointer; background: none; border: none; padding: 5px; margin: 5px 0; }
+        .turn-indicator { padding: 5px 10px; border-radius: 4px; font-weight: bold; }
         .my-turn { background: #4caf50; }
         .other-turn { background: #2196f3; }
-        .settings-tab {
-            margin-top: 15px;
-            display: none;
-        }
-        .settings-tab input {
-            width: 100%;
-            padding: 8px;
-            margin: 8px 0;
-            border-radius: 4px;
-            border: none;
-            box-sizing: border-box;
-        }
-        .settings-tab button {
-            color: var(--default-red-color);
-            cursor: pointer;
-            background: none;
-            border: none;
-            padding: 5px;
-            margin: 5px 0;
-        }
-        .toggle-btn {
-            cursor: pointer;
-            color: #ff9800;
-        }
-        .result-span {
-            font-size: 12px;
-            font-weight: 100;
-            display: block;
-            margin-top: 10px;
-        }
-        .upkeep-button {
-            color: var(--default-blue-color);
-            cursor: pointer;
-            margin-right: 10px;
-            background: none;
-            border: none;
-            font-size: 14px;
-        }
+        .settings-tab { margin-top: 15px; display: none; }
+        .settings-tab input { width: 100%; padding: 8px; margin: 8px 0; border-radius: 4px; border: none; box-sizing: border-box; }
+        .toggle-btn { cursor: pointer; color: #ff9800; }
+        .result-span { font-size: 12px; font-weight: 100; display: block; margin-top: 10px; }
+        .upkeep-button { color: var(--default-blue-color); cursor: pointer; margin-right: 10px; background: none; border: none; font-size: 14px; }
     `);
 
     // --- Main Function ---
-    async function addButtonAndCheck() {
-        if (document.querySelector('.upkeep-button')) {
-            console.log("Upkeep button already exists, skipping creation.");
-            return;
-        }
+    function initialize() {
+        waitForElement('div.content-title > h4', (navbarTarget) => {
+            if (document.querySelector('.upkeep-button')) return;
 
-        console.log("Initializing upkeep telemetry for Private Island...");
+            const upkeepButton = document.createElement('button');
+            upkeepButton.className = 'upkeep-button';
+            upkeepButton.id = 'UpkeepButton';
+            upkeepButton.textContent = 'Loading Upkeep...';
+            navbarTarget.appendChild(upkeepButton);
 
-        // Add Button Under Navbar
-        const navbarTarget = document.querySelector('div.content-title > h4') || document.body;
-        const upkeepButton = document.createElement('button');
-        upkeepButton.className = 'upkeep-button';
-        upkeepButton.id = 'UpkeepButton';
-        upkeepButton.textContent = 'Loading Upkeep...';
-        navbarTarget.appendChild(upkeepButton);
+            const panel = document.createElement('div');
+            panel.className = 'telemetry-panel';
+            panel.style.display = panelVisible ? 'block' : 'none';
+            document.body.appendChild(panel);
 
-        // Create Telemetry Panel
-        const panel = document.createElement('div');
-        panel.className = 'telemetry-panel';
-        document.body.appendChild(panel);
+            upkeepButton.addEventListener('click', () => {
+                panelVisible = !panelVisible;
+                GM_setValue('panelVisible', panelVisible);
+                panel.style.display = panelVisible ? 'block' : 'none';
+            });
 
-        // Initial UI setup
-        await updateUI();
-
-        // Toggle Panel
-        upkeepButton.addEventListener('click', () => {
-            panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
+            updateUI();
+            if (!apiToken || apiToken === DEFAULT_API_KEY) {
+                promptForApiToken();
+            } else {
+                updateUpkeep(apiToken);
+                setInterval(() => updateUpkeep(apiToken), CHECK_INTERVAL);
+            }
+            scheduleNotification();
         });
-
-        // Check API token
-        if (!apiToken || apiToken === DEFAULT_API_KEY) {
-            promptForApiToken();
-        } else {
-            updateUpkeep(apiToken);
-            setInterval(() => updateUpkeep(apiToken), CHECK_INTERVAL);
-        }
-
-        scheduleNotification();
     }
 
     // --- Update UI ---
@@ -266,7 +202,7 @@
                 <p><button id="Upkeep">Go to Properties</button></p>
                 <p><strong>Whose Turn:</strong> <button id="OtherPlayer" class="turn-indicator ${myTurn ? 'my-turn' : 'other-turn'}">${myTurn ? 'You' : otherPlayer}</button></p>
                 <p><strong>Last Payment:</strong> ${lastPaymentDate || 'Not detected'}</p>
-                <span class="result-span" id="Result">Loading...</span>
+                <span class="result-span" id="Result">${apiToken && apiToken !== DEFAULT_API_KEY ? 'API token found.' : 'No API token set.'}</span>
             </div>
             <div class="settings-tab" id="settingsTab">
                 <input type="text" id="apiKeyInput" placeholder="Enter API Key" value="${apiToken}">
@@ -278,22 +214,15 @@
         `;
 
         const resultSpan = document.getElementById('Result');
-        resultSpan.textContent = apiToken && apiToken !== DEFAULT_API_KEY ? 'API token found.' : 'No API token set.';
         resultSpan.style.color = apiToken && apiToken !== DEFAULT_API_KEY ? 'green' : 'red';
 
-        // Event Listeners
-        document.getElementById('Upkeep').addEventListener('click', () => {
-            window.location.href = PROPERTIES_PAGE;
-        });
-
-        // Make "Other Player" button editable
-        const otherPlayerButton = document.getElementById('OtherPlayer');
-        otherPlayerButton.addEventListener('click', () => {
+        document.getElementById('Upkeep').addEventListener('click', () => window.location.href = PROPERTIES_PAGE);
+        document.getElementById('OtherPlayer').addEventListener('click', () => {
             const newName = prompt("Enter the name of the other player:", otherPlayer);
-            if (newName && newName.trim() !== '') {
+            if (newName && newName.trim()) {
                 otherPlayer = newName.trim();
                 GM_setValue('otherPlayer', otherPlayer);
-                updateUI(); // Refresh UI to reflect the new name
+                updateUI();
             }
         });
 
@@ -303,7 +232,6 @@
             settingsTab.style.display = settingsTab.style.display === 'block' ? 'none' : 'block';
         });
 
-        // Settings Inputs
         document.getElementById('apiKeyInput').addEventListener('change', (e) => {
             apiToken = e.target.value;
             GM_setValue('tornApiToken', apiToken);
@@ -342,7 +270,7 @@
     // --- Prompt for API Token ---
     function promptForApiToken() {
         const resultSpan = document.getElementById('Result');
-        const newApiToken = prompt("Please enter your Torn API token key (Full Access with 'Events' permission required):", DEFAULT_API_KEY);
+        const newApiToken = prompt("Please enter your Torn API token (Full Access with 'Events' permission required):", DEFAULT_API_KEY);
         if (newApiToken && newApiToken !== DEFAULT_API_KEY) {
             apiToken = newApiToken;
             GM_setValue('tornApiToken', apiToken);
@@ -352,9 +280,8 @@
             updateUpkeep(apiToken);
             setInterval(() => updateUpkeep(apiToken), CHECK_INTERVAL);
         } else {
-            resultSpan.textContent = 'No valid API token provided.';
+            resultSpan.textContent = 'Invalid or no API token provided.';
             resultSpan.style.color = 'red';
-            console.error('No valid API token provided.');
         }
     }
 
@@ -365,38 +292,16 @@
         upkeepButton.textContent = 'Loading Upkeep...';
 
         try {
-            // Fetch player ID
-            let userId = new URLSearchParams(window.location.search).get('XID');
-            if (!userId) {
-                const userResponse = await fetch(`https://api.torn.com/user/?selections=basic&key=${apiToken}`);
-                const userData = await userResponse.json();
-                if (userData.error) throw new Error(`API error: ${userData.error.error}`);
-                userId = userData.player_id;
-            }
+            const userResponse = await fetch(`https://api.torn.com/user/?selections=basic,properties,events&key=${apiToken}`);
+            const userData = await userResponse.json();
+            if (userData.error) throw new Error(`API error: ${userData.error.error}`);
 
-            // Fetch property types
-            const propTypesResponse = await fetch(`https://api.torn.com/properties?key=${apiToken}`);
-            const propTypesData = await propTypesResponse.json();
-            if (propTypesData.error) throw new Error(`API error: ${propTypesData.error.error}`);
-
-            let privateIslandId = null;
-            for (const [id, prop] of Object.entries(propTypesData.properties)) {
-                if (prop.property_type_name === 'Private Island') {
-                    privateIslandId = id;
-                    break;
-                }
-            }
-            if (!privateIslandId) throw new Error('Private Island property type not found.');
-
-            // Fetch player properties
-            const playerResponse = await fetch(`https://api.torn.com/user/${userId}?selections=properties&key=${apiToken}`);
-            const playerData = await playerResponse.json();
-            if (playerData.error) throw new Error(`API error: ${playerData.error.error}`);
-
-            const properties = playerData.properties;
+            const userId = userData.player_id;
+            const properties = userData.properties || {};
+ ਪ
             let upkeepValue = null;
             for (const prop of Object.values(properties)) {
-                if (String(prop.property_type) === String(privateIslandId)) {
+                if (prop.property_type === 10) { // Private Island type ID
                     upkeepValue = prop.upkeep;
                     break;
                 }
@@ -412,7 +317,6 @@
                 resultSpan.style.color = 'orange';
             }
 
-            // Update button text after API call
             const myTurn = await isMyTurn(apiToken);
             const statusText = myTurn ? 'Your Turn' : `${otherPlayer}'s Turn`;
             upkeepButton.textContent = `Upkeep: $${upkeepCost.toLocaleString()} - ${statusText}`;
@@ -427,5 +331,5 @@
     }
 
     // --- Initialize ---
-    addButtonAndCheck();
+    initialize();
 })();
