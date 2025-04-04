@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Upkeep Alerts
 // @namespace    http://tampermonkey.net/
-// @version      2025-04-04.1
+// @version      2025-04-04.2
 // @description  Helps manage shared Private Island upkeep on Torn.com with telemetry, notifications, API integration, and payment detection for tornPDA.
 // @author       Hitful (enhanced by Grok/xAI)
 // @match        https://www.torn.com/*
@@ -73,7 +73,7 @@
         const payment = await checkPaymentHistory(apiToken);
         if (payment.paid) {
             lastPaymentDate = payment.date;
-            return false; // If you just paid, it’s the other player’s turn next
+            return false; // If you just paid, it’s the other player’s turn
         }
         if (lastPaymentDate) {
             const today = new Date();
@@ -173,29 +173,39 @@
             display: block;
             margin-top: 5px;
         }
-        .telemetry-icon {
-            width: 24px;
-            height: 24px;
+        .cooldown-icon {
+            width: 20px;
+            height: 20px;
             cursor: pointer;
+            margin: 5px;
+            vertical-align: middle;
+            filter: brightness(1.5); /* Match Torn's icon brightness */
         }
     `);
 
     // --- Main Function ---
-    async function addButtonAndCheck() {
-        if (document.querySelector('.telemetry-icon')) {
-            console.log("Telemetry icon already exists, skipping creation.");
+    async function addIconAndCheck() {
+        if (document.querySelector('.cooldown-icon')) {
+            console.log("Cooldown icon already exists, skipping creation.");
             return;
         }
 
         console.log("Initializing upkeep telemetry for Private Island...");
 
-        // Add Telemetry Icon to Cooldown Area
-        const cooldownTarget = document.querySelector('.cooldown-icons') || document.body;
-        const telemetryIcon = document.createElement('img');
-        telemetryIcon.className = 'telemetry-icon';
-        telemetryIcon.src = 'https://via.placeholder.com/24'; // Placeholder icon URL
-        telemetryIcon.alt = 'Telemetry';
-        cooldownTarget.appendChild(telemetryIcon);
+        // Target the cooldowns area under regen bars
+        const cooldownTarget = document.querySelector('#sidebarroot div[class*="cooldowns"]') || document.querySelector('#sidebarroot');
+        if (!cooldownTarget) {
+            console.error("Cooldown area not found. Retrying in 1s...");
+            setTimeout(addIconAndCheck, 1000); // Retry if sidebar not loaded
+            return;
+        }
+
+        // Add Placeholder Icon (Dollar Sign SVG)
+        const icon = document.createElement('img');
+        icon.className = 'cooldown-icon';
+        icon.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAiIGhlaWdodD0iMjAiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cGF0aCBkPSJNMTIgMjJDMTcuNTIyIDIyIDIyIDE3LjUyMiAyMiAxMlM3LjQ3OCAyIDYgMiAxLjQ3OCAxMiAxMiAyWk0xMyAxN0gxMVYxOEgxMFYxN0g5VjE2SDExVjE1SDEyVjE2SDEzVjE3Wk0xMSAxM0gxM1YxNEgxMlYxNUgxMVYxNEgxMFYxM0g5VjEySDExVjExSDEyVjEySDEzVjEzWiIgZmlsbD0iI2ZmZiIvPjwvc3ZnPg==';
+        icon.title = 'Upkeep Telemetry'; // Tooltip
+        cooldownTarget.appendChild(icon);
 
         // Create Telemetry Panel
         const panel = document.createElement('div');
@@ -206,7 +216,7 @@
         await updateUI();
 
         // Toggle Panel
-        telemetryIcon.addEventListener('click', () => {
+        icon.addEventListener('click', () => {
             panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
         });
 
@@ -235,7 +245,7 @@
                 <p>Date: ${new Date().toLocaleDateString()}</p>
                 <button id="Upkeep">${upkeepButtonText}</button>
                 <button id="ResetKey">Reset API Key</button>
-                <p>Whose Turn: <span class="turn-indicator ${myTurn ? 'my-turn' : 'other-turn'}">${myTurn ? 'You' : otherPlayer}</span></p>
+                <p>Whose Turn: <span class="turn-indicator ${myTurn ? 'my-turn' : 'other-turn'}">${myTurn ? 'You' : otherPlayer}</,numberp>
                 <p>Last Payment: ${lastPaymentDate || 'Not detected'}</p>
                 <span class="result-span" id="Result">Loading...</span>
             </div>
@@ -371,5 +381,5 @@
     }
 
     // --- Initialize ---
-    addButtonAndCheck();
+    addIconAndCheck();
 })();
