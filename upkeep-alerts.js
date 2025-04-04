@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Upkeep Alerts
 // @namespace    http://tampermonkey.net/
-// @version      2025-04-04.7
+// @version      2025-04-04.8
 // @description  Helps manage shared Private Island upkeep on Torn.com with telemetry, notifications, API integration, and payment detection.
 // @author       Hitful (enhanced by Grok/xAI)
 // @match        https://www.torn.com/*
@@ -23,7 +23,7 @@
     const DEFAULT_API_KEY = 'YOUR_API_KEY_HERE';
     const PROPERTIES_PAGE = 'https://www.torn.com/properties.php';
     const DEFAULT_UPKEEP_COST = 352500; // $352,500/day
-    const NOTIFICATION_HOUR_OFFSET = 7; // Notify 7 hours before midnight UTC (adjustable)
+    const NOTIFICATION_HOUR_OFFSET = 7; // Notify 7 hours before midnight UTC
 
     // --- Load Stored Settings ---
     let apiToken = GM_getValue('tornApiToken', localStorage.getItem('tornApiToken') || DEFAULT_API_KEY);
@@ -63,16 +63,33 @@
             const data = await response.json();
             if (data.error) throw new Error(`API error: ${data.error.error}`);
 
-            const events = data.events || {};
+            const events = data.events || [];
+            console.log('Events from API:', events); // Debug: Log the events
+
             const today = new Date().toISOString().split('T')[0];
-            for (const event of Object.values(events)) {
+            let paymentFound = false;
+            let paymentDate = null;
+
+            // Handle both array and object formats for events
+            const eventList = Array.isArray(events) ? events : Object.values(events);
+
+            for (const event of eventList) {
+                if (!event || !event.timestamp || !event.event) continue;
+
                 const eventDate = new Date(event.timestamp * 1000).toISOString().split('T')[0];
-                if (eventDate === today && event.event.includes('upkeep') && event.event.includes('Private Island')) {
+                const eventText = event.event.toLowerCase();
+                console.log(`Event: ${eventText}, Date: ${eventDate}`); // Debug: Log each event
+
+                // Broaden the matching criteria for upkeep payment
+                if (eventDate === today && eventText.includes('upkeep') && (eventText.includes('private island') || eventText.includes('property'))) {
+                    paymentFound = true;
+                    paymentDate = today;
                     GM_setValue('lastPaymentDate', today);
-                    return { paid: true, date: today };
+                    break;
                 }
             }
-            return { paid: false, date: lastPaymentDate };
+
+            return { paid: paymentFound, date: paymentDate || lastPaymentDate };
         } catch (error) {
             console.error('Error checking payment history:', error);
             return { paid: false, date: lastPaymentDate };
@@ -103,7 +120,6 @@
 
         const timeUntil = notifyTimeUTC - now;
         if (timeUntil < 0) {
-            // If notify time has passed today, schedule for tomorrow
             notifyTimeUTC.setUTCDate(notifyTimeUTC.getUTCDate() + 1);
         }
 
@@ -113,7 +129,7 @@
                 const localNotifyTime = new Date(notifyTimeUTC).toLocaleTimeString();
                 notifyUser(`It’s your turn to pay $${upkeepCost.toLocaleString()} for PI upkeep today! Notification set for ${localNotifyTime}.`);
             }
-            scheduleNotification(); // Reschedule for next day
+            scheduleNotification();
         }, Math.max(notifyTimeUTC - new Date(), 0));
     }
 
@@ -188,8 +204,10 @@
     async function updateUI() {
         const myTurn = await isMyTurn(apiToken);
         const upkeepButton = document.getElementById('UpkeepButton');
-        const statusText = myTurn ? 'Your Turn' : `${otherPlayer}'s Turn`;
-        upkeepButton.textContent = `Upkeep: $${upkeepCost.toLocaleString()} - ${statusText}`;
+        if (upkeepButton) {
+            const statusText = myTurn ? 'Your Turn' : `${otherPlayer}'s Turn`;
+            upkeepButton.textContent = `Upkeep: $${upkeepCost.toLocaleString()} - ${statusText}`;
+        }
 
         const panel = document.querySelector('.telemetry-panel');
         panel.innerHTML = `
@@ -289,6 +307,10 @@
     async function updateUpkeep(apiToken) {
         const upkeepButton = document.getElementById('UpkeepButton');
         const resultSpan = document.getElementById('Result');
+        if (!upkeepButton || !resultSpan) {
+            console.error('Upkeep button or result span not found. Skipping update.');
+            return;
+        }
         upkeepButton.textContent = 'Loading Upkeep...';
 
         try {
@@ -298,7 +320,6 @@
 
             const userId = userData.player_id;
             const properties = userData.properties || {};
- ਪ
             let upkeepValue = null;
             for (const prop of Object.values(properties)) {
                 if (prop.property_type === 10) { // Private Island type ID
